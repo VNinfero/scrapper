@@ -33,6 +33,7 @@ from linkedin_scraper.main import LinkedInScraperMain
 from yt_scraper.main import YouTubeScraperInterface
 from database.mongodb_manager import get_mongodb_manager
 from filter_web_lead import MongoDBLeadProcessor
+from contact_scraper import scrape_from_url, get_social_media_contacts
 
 # Import Gemini AI (assuming it's available)
 try:
@@ -169,31 +170,8 @@ class LeadGenerationOrchestrator:
         print("3. linkedin - LinkedIn profiles and companies")
         print("4. youtube - YouTube channels and videos")
         
-        selection = input("\nEnter scrapers to use (comma-separated, or press Enter for default): ").strip()
-        
-        if not selection:
-            return ['web_scraper']
-        
-        selected = []
-        scraper_map = {
-            '1': 'web_scraper',
-            '2': 'instagram', 
-            '3': 'linkedin',
-            '4': 'youtube',
-            'web_scraper': 'web_scraper',
-            'instagram': 'instagram',
-            'linkedin': 'linkedin',
-            'youtube': 'youtube'
-        }
-        
-        for item in selection.split(','):
-            item = item.strip().lower()
-            if item in scraper_map:
-                scraper_name = scraper_map[item]
-                if scraper_name not in selected:
-                    selected.append(scraper_name)
-        
-        return selected if selected else ['web_scraper']
+        # For automated execution, return default selection without user input
+        return ['web_scraper']
     
     async def generate_search_queries(self, icp_data: Dict[str, Any], selected_scrapers: List[str]) -> List[str]:
         """
@@ -541,8 +519,127 @@ class LeadGenerationOrchestrator:
                 results['youtube'] = {'error': str(e)}
         
         return results
-    
-    def generate_final_report(self, icp_data: Dict[str, Any], selected_scrapers: List[str], 
+
+    async def enrich_leads_with_contact_scraper(self):
+        """
+        Enrich leads in MongoDB with missing contact information using contact_scraper.py
+        """
+        if not self.mongodb_manager:
+            logger.warning("MongoDB manager not initialized. Skipping lead enrichment.")
+            return
+
+        db = self.mongodb_manager.db
+        leadgen_leads_collection = db.leadgen_leads
+
+        # Find leads that are missing email or phone
+        # Check for both 'contacts.emails' and 'contacts.phones' being empty or not existing
+        query = {
+            "$or": [
+                {"contacts.emails": {"$exists": False}},
+                {"contacts.emails": {"$size": 0}},
+                {"contacts.phones": {"$exists": False}},
+                {"contacts.phones": {"$size": 0}}
+            ]
+        }
+        
+        leads_to_enrich = list(leadgen_leads_collection.find(query))
+        logger.info(f"Found {len(leads_to_enrich)} leads to enrich.")
+
+        for lead in leads_to_enrich:
+            lead_id = lead['_id']
+            updated_contacts = []
+            
+            # Prioritize social media links if available
+            social_media_urls = lead.get('social_media', [])
+            company_website = lead.get('website')
+            company_name = lead.get('company_name')
+
+            found_contact_info = False
+
+            if social_media_urls:
+                for social_url_entry in social_media_urls:
+                    social_url = social_url_entry.get('url')
+                    if social_url:
+                        try:
+                            scraped_data = await scrape_from_url(social_url)
+                            if scraped_data and (scraped_data.get('emails') or scraped_data.get('phone_numbers')):
+                                updated_contacts.append(scraped_data)
+                                found_contact_info = True
+                        except Exception as e:
+                            logger.error(f"Error scraping {social_url}: {e}")
+            
+            if not found_contact_info and (company_name or company_website):
+                try:
+                    scraped_data_by_name = await get_social_media_contacts(company_name if company_name else company_website)
+                    if scraped_data_by_name:
+                        for data in scraped_data_by_name:
+                            if data.get('emails') or data.get('phone_numbers'):
+                                updated_contacts.append(data)
+                                found_contact_info = True
+                                break
+                except Exception as e:
+                    logger.error(f"Error scraping for company {company_name}: {e}")
+
+            if updated_contacts:
+                existing_contacts_emails = lead.get('contact', {}).get('emails', [])
+                existing_contacts_phones = lead.get('contact', {}).get('phone_numbers', [])
+
+                all_emails = set(e['value'] if isinstance(e, dict) and 'value' in e else e for e in existing_contacts_emails)
+                all_phones = set(p['value'] if isinstance(p, dict) and 'value' in p else p for p in existing_contacts_phones)
+
+                for contact_entry in updated_contacts:
+                    if contact_entry and isinstance(contact_entry, dict):
+                        for email in contact_entry.get('emails', []):
+                            if isinstance(email, dict) and 'value' in email:
+                                all_emails.add(email['value'])
+                            elif isinstance(email, str):
+                                all_emails.add(email)
+                        for phone in contact_entry.get('phone_numbers', []):
+                            if isinstance(phone, dict) and 'value' in phone:
+                                all_phones.add(phone['value'])
+                            elif isinstance(phone, str):
+                                all_phones.add(phone)
+                
+                new_contact_data = lead.get('contact', {})
+                new_contact_data['emails'] = list(all_emails)
+                new_contact_data['phone_numbers'] = list(all_phones)
+
+                if new_contact_data['emails'] or new_contact_data['phone_numbers']:
+                    leadgen_leads_collection.update_one(
+                        {'_id': lead_id},
+                        {'$set': {'contact': new_contact_data}}
+                    )
+                    logger.info(f"Updated lead {lead_id} with new contact information.")
+                else:
+                    logger.info(f"No new contact information found or merged for lead {lead_id}.")
+            else:
+                logger.info(f"No additional contact information found for lead {lead_id}.")
+
+    async def export_enriched_leads_to_json(self, filename: str = "enriched_leads.json"):
+        """
+        Exports all leads from the leadgen_leads collection to a JSON file.
+        """
+        if not self.mongodb_manager:
+            logger.warning("MongoDB manager not initialized. Cannot export leads.")
+            return
+
+        try:
+            leads = self.mongodb_manager.get_unified_leads(limit=0) # Get all leads
+            
+            # Convert ObjectId to string for JSON serialization
+            for lead in leads:
+                if '_id' in lead:
+                    lead['_id'] = str(lead['_id'])
+                if 'metadata' in lead and 'scraped_at' in lead['metadata']:
+                    lead['metadata']['scraped_at'] = str(lead['metadata']['scraped_at'])
+
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(leads, f, indent=2, ensure_ascii=False)
+            logger.info(f"✅ Exported {len(leads)} enriched leads to {filename}")
+        except Exception as e:
+            logger.error(f"❌ Error exporting enriched leads to JSON: {e}")
+
+    def generate_final_report(self, icp_data: Dict[str, Any], selected_scrapers: List[str],
                             results: Dict[str, Any]) -> str:
         """
         Generate a final report of the orchestration results
@@ -699,8 +796,16 @@ class LeadGenerationOrchestrator:
                 logger.error(f"❌ Error in lead filtering: {e}")
                 results['lead_filtering'] = {'error': str(e)}
 
-            # Step 7: Generate final report
-            logger.info("📊 Step 7: Generating final report...")
+            # Step 7: Enrich leads with missing contact information
+            logger.info("✨ Step 7: Enriching leads with contact details...")
+            await self.enrich_leads_with_contact_scraper()
+
+            # Step 8: Export enriched leads to JSON
+            logger.info("📄 Step 8: Exporting enriched leads to JSON...")
+            await self.export_enriched_leads_to_json()
+
+            # Step 9: Generate final report
+            logger.info("📊 Step 9: Generating final report...")
             report_file = self.generate_final_report(icp_data, selected_scrapers, results)
             
             # Final summary
