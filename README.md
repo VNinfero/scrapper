@@ -1,6 +1,6 @@
 # AI Lead Generation Application
 
-A comprehensive lead generation system that uses AI-powered search query generation and multi-platform scraping (including Instagram, LinkedIn, YouTube, and general websites) to identify potential customers based on Ideal Customer Profiles (ICP). The system features a unified data storage approach that normalizes lead data across all platforms into a consistent schema.
+A comprehensive lead generation system that uses AI-powered search query generation and multi-platform scraping (including Instagram, LinkedIn, YouTube, FB, Twitter, Reddit, Quora and general websites.) to identify potential customers based on Ideal Customer Profiles (ICP).
 
 ## Table of Contents
 

@@ -138,7 +138,7 @@ class LinkedInDataExtractor:
             except Exception as e:
                 print(f"Error processing LinkedIn response: {e}")
     
-    async def extract_linkedin_data(self, url: str) -> Dict[str, Any]:
+    async def extract_linkedin_data(self, url: str, referer: Optional[str] = None) -> Dict[str, Any]:
         """Extract LinkedIn data from a specific URL using JSON-LD as primary source"""
         print(f"Extracting LinkedIn data from: {url}")
         
@@ -148,7 +148,7 @@ class LinkedInDataExtractor:
         
         try:
             # Navigate to the page and close popup
-            popup_closed = await self.browser_manager.navigate_to_with_popup_close(url)
+            popup_closed = await self.browser_manager.navigate_to_with_popup_close(url, referer=referer)
             print(f"✓ Navigation completed, popup closed: {popup_closed}")
             
             # Wait for page to load and network requests to complete

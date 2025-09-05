@@ -28,13 +28,19 @@ async def example_2_multiple_urls():
     #     "https://www.youtube.com/@stillwatchingnetflix"
     # ]
 
+    # urls = [
+    #     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    #     "https://www.youtube.com/shorts/YIe4jPsvv5g",
+    #     "https://www.youtube.com/@stillwatchingnetflix",
+    #     "https://www.youtube.com/watch?v=IDjvwIoIqQY&pp=ygUII25vcnRoM24%3D"
+    # ]
     urls = [
-        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        "https://www.youtube.com/shorts/YIe4jPsvv5g",
-        "https://www.youtube.com/@stillwatchingnetflix",
-        "https://www.youtube.com/watch?v=IDjvwIoIqQY&pp=ygUII25vcnRoM24%3D"
+        "https://www.youtube.com/watch?v=-ExNTLn3DK4&pp=ygUGI3RoZ29h",
+"https://www.youtube.com/watch?v=IDjvwIoIqQY&pp=ygUII25vcnRoM24%3D",
+"https://www.youtube.com/watch?v=qaa9IJIW4go",
+"https://www.youtube.com/watch?v=5nnoVRUZA-c"
+
     ]
-    
     # 1 line to scrape multiple URLs
     success = await quick_batch_scrape(urls, "yt_scraper/batch_results.json")
     
@@ -60,10 +66,10 @@ async def example_3_from_file():
 # "https://www.youtube.com/watch?v=qaa9IJIW4go"
 #     ]
     sample_urls = [
-        "https://www.youtube.com/watch?v=OId7NfbCfm8",
         "https://www.youtube.com/watch?v=-ExNTLn3DK4&pp=ygUGI3RoZ29h",
 "https://www.youtube.com/watch?v=IDjvwIoIqQY&pp=ygUII25vcnRoM24%3D",
-"https://www.youtube.com/watch?v=qaa9IJIW4go"
+"https://www.youtube.com/watch?v=qaa9IJIW4go",
+"https://www.youtube.com/watch?v=5nnoVRUZA-c"
     ]
     
     with open("sample_urls.txt", "w") as f:

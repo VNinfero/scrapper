@@ -57,9 +57,9 @@ class LinkedInScraperMain:
         # Check for common sign-up indicators
         signup_indicators = [
             "sign up", "signup", "join linkedin", "create account",
-            "register", "get started", "welcome to linkedin"
+            "register", "get started", "welcome to linkedin",
+            "member login", "log in", "continue with", "create profile"
         ]
-        
         # Normalize fields
         def normalize(value: Any) -> str:
             """Convert value to lowercase string, handle lists gracefully"""
@@ -88,7 +88,7 @@ class LinkedInScraperMain:
             return True
         
         # Check if about contains LinkedIn's default signup description
-        if "750 million+ members" in about and "manage your professional identity" in about:
+        if "million+ members" in about and "manage your professional identity" in about:
             return True
         
         return False
@@ -111,8 +111,21 @@ class LinkedInScraperMain:
             # Add random delay before retry
             await asyncio.sleep(random.uniform(2.0, 4.0))
             
-            # Extract data with enhanced settings
-            raw_data = await enhanced_extractor.extract_linkedin_data(url)
+            # Detect URL type and prepare Google referer only for profiles
+            url_type = enhanced_extractor.browser_manager.detect_url_type(url)
+            google_referer: Optional[str] = None
+            if url_type == 'profile':
+                # Simulate coming from Google search results for this profile
+                username_match = re.search(r'linkedin\.com/in/([^/?]+)', url)
+                search_query = username_match.group(1) if username_match else ''
+                if search_query:
+                    google_referer = f"https://www.google.com/search?q=site%3Alinkedin.com%2Fin%2F+{search_query}"
+                else:
+                    google_referer = 'https://www.google.com/'
+                print("🔎 Using Google referer for profile retry")
+            
+            # Extract data with enhanced settings and optional referer
+            raw_data = await enhanced_extractor.extract_linkedin_data(url, referer=google_referer)
             
             if raw_data.get('error'):
                 print(f"❌ Enhanced retry failed: {raw_data['error']}")
@@ -763,9 +776,15 @@ if __name__ == "__main__":
         # "https://www.linkedin.com/posts/harishbali_ep-5-nusa-penida-island-bali-everything-activity-7200356196912963584-V8mV" #Post URL type '@type': 'DiscussionForumPosting'
     # ]
     test_urls = [
-"https://in.linkedin.com/in/manoj-chauhan-02238323",
-"https://www.linkedin.com/in/atousasalehi",
-"https://ie.linkedin.com/in/rossmmccarthy"        
+        "https://www.linkedin.com/pulse/just-finished-travelling-around-world-one-year-now-what-guimar%C3%A3es",
+        "https://careers.linkedin.com/",
+        "https://www.linkedin.com/legal/user-agreement",
+"https://in.linkedin.com/in/rishabhmariwala",
+      "https://in.linkedin.com/in/ruchi-aggarwal",
+      "https://www.linkedin.com/posts/mohesh-mohan_a-hackers-travel-diaries-episode-1-hotels-activity-7139268391843921920-DW8u",
+      "https://in.linkedin.com/in/mohansundaram",
+      "https://www.linkedin.com/posts/aazam-ali-mir-26aab2135_i-recently-travelled-to-belgrade-serbia-activity-7350519219886653440-n0IY",
+      "https://in.linkedin.com/company/odysseytravels"
     ]
     print("Testing LinkedIn Scraper...")
     print("Method 1: Function approach")

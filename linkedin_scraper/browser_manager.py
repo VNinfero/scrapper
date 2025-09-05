@@ -131,8 +131,10 @@ class BrowserManager:
         if hasattr(self, 'playwright'):
             await self.playwright.stop()
             
-    async def navigate_to(self, url: str, wait_time: int =3) -> None:
-        """Navigate to URL with human-like delays and anti-detection measures"""
+    async def navigate_to(self, url: str, wait_time: int =3, referer: Optional[str] = None) -> None:
+        """Navigate to URL with human-like delays and anti-detection measures
+        Optionally sends a Google-like referer to simulate navigation from search results.
+        """
         if not self.page:
             raise RuntimeError("Browser not started. Call start() first.")
         
@@ -144,7 +146,11 @@ class BrowserManager:
             # Random delay to mimic human behavior
             await asyncio.sleep(random.uniform(1, 3))
         
-        await self.page.goto(url, wait_until='domcontentloaded')
+        # Use Playwright per-navigation referer if provided
+        if referer:
+            await self.page.goto(url, wait_until='domcontentloaded', referer=referer)
+        else:
+            await self.page.goto(url, wait_until='domcontentloaded')
         
         # Update request count for anti-detection tracking
         if self.enable_anti_detection and self.anti_detection:
@@ -304,13 +310,15 @@ class BrowserManager:
             print(f"  - {platform_name} popup still visible after Escape key")
             return False
             
-    async def navigate_to_with_popup_close(self, url: str, wait_time: int = 3) -> bool:
-        """Navigate to URL and attempt to close any popup"""
+    async def navigate_to_with_popup_close(self, url: str, wait_time: int = 3, referer: Optional[str] = None) -> bool:
+        """Navigate to URL and attempt to close any popup
+        Optionally sends a referer (e.g., Google) during navigation.
+        """
         if not self.page:
             raise RuntimeError("Browser not started. Call start() first.")
             
         # Navigate to URL
-        await self.navigate_to(url, wait_time)
+        await self.navigate_to(url, wait_time, referer=referer)
         
         # Try to close popup
         popup_closed = await self.close_popup()

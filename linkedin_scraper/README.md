@@ -250,6 +250,7 @@ Monitors LinkedIn API requests for additional data:
 - **Popup Handling**: Automatic dismissal of LinkedIn login prompts
 - **Request Throttling**: Configurable delays between requests
 - **Stealth Mode**: Advanced evasion techniques
+- **Retry mechanism**: It reduce sign-up page encounters by making requests appear as legitimate referrals from Google search results rather than direct bot access, especially for "profile" type.
 
 ## Error Handling
 
