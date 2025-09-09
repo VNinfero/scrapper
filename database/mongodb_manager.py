@@ -1392,7 +1392,131 @@ class MongoDBManager:
         except Exception as e:
             logger.error(f"❌ Failed to ensure schema compliance: {e}")
             return {'error': str(e)}
-    
+
+    def enrich_unified_leads_from_sources(self) -> Dict[str, int]:
+        """
+        Iterates through unified_leads and enriches contact information
+        by checking all source collections.
+        
+        This function is designed to be run periodically to update and enrich
+        existing unified leads with the latest and most comprehensive contact details
+        found across all specific scraper collections.
+        
+        Returns:
+            Dict with statistics on enrichment process.
+        """
+        logger.info("Starting enrichment process for unified_leads collection...")
+        unified_collection = self.db[self.collections['unified']]
+        
+        # Define the source collections and their relevant fields for contact info extraction
+        source_config = {
+            'instagram': {'collection': self.collections['instagram'], 'email_field': 'business_email', 'phone_field': 'business_phone_number', 'url_field': 'url', 'username_field': 'username'},
+            'linkedin': {'collection': self.collections['linkedin'], 'email_field': 'emails', 'phone_field': 'phone_numbers', 'url_field': 'url', 'username_field': 'username'},
+            'web': {'collection': self.collections['web'], 'email_field': 'email', 'phone_field': 'phone', 'url_field': 'source_url', 'website_field': 'website'},
+            'youtube': {'collection': self.collections['youtube'], 'email_field': 'email', 'phone_field': 'phone_numbers', 'url_field': 'url', 'username_field': 'channel_name'},
+            'facebook': {'collection': self.collections['facebook'], 'email_field': 'emails', 'phone_field': 'phone_numbers', 'url_field': 'url', 'username_field': 'username'}
+        }
+        
+        total_unified_leads = unified_collection.count_documents({})
+        leads_enriched = 0
+        leads_skipped = 0
+        
+        # Iterate through all unified leads
+        for unified_lead in unified_collection.find({}):
+            unified_id = unified_lead.get('_id')
+            unified_url = unified_lead.get('url')
+            unified_username = unified_lead.get('profile', {}).get('username')
+            
+            current_emails = set(unified_lead.get('contact', {}).get('emails', []))
+            current_phone_numbers = set(unified_lead.get('contact', {}).get('phone_numbers', []))
+            
+            updated_emails = set(current_emails)
+            updated_phone_numbers = set(current_phone_numbers)
+            
+            found_new_contact_info = False
+            
+            if not unified_url and not unified_username:
+                logger.warning(f"⚠️ Unified lead {unified_id} skipped: Missing URL and username for enrichment.")
+                leads_skipped += 1
+                continue
+
+            # Check each source collection for additional contact information
+            for platform, config in source_config.items():
+                source_collection = self.db[config['collection']]
+                
+                # Build query for source collection
+                source_query = {}
+                if unified_url and config.get('url_field'):
+                    source_query[config['url_field']] = unified_url
+                if unified_username and config.get('username_field'):
+                    source_query[config['username_field']] = unified_username
+                
+                if not source_query:
+                    continue # Skip if no identifiable fields from unified lead
+
+                # Find leads in source collection
+                source_leads = source_collection.find(source_query)
+                
+                for source_lead in source_leads:
+                    # Extract emails
+                    source_emails = []
+                    if config.get('email_field'):
+                        email_data = source_lead.get(config['email_field'])
+                        if isinstance(email_data, str) and email_data:
+                            source_emails.append(email_data)
+                        elif isinstance(email_data, list):
+                            source_emails.extend([e for e in email_data if e and isinstance(e, str)])
+                    
+                    # Extract phone numbers
+                    source_phone_numbers = []
+                    if config.get('phone_field'):
+                        phone_data = source_lead.get(config['phone_field'])
+                        if isinstance(phone_data, str) and phone_data:
+                            source_phone_numbers.append(phone_data)
+                        elif isinstance(phone_data, list):
+                            source_phone_numbers.extend([p for p in phone_data if p and isinstance(p, str)])
+                    
+                    # Merge into updated sets
+                    new_emails = set(source_emails) - updated_emails
+                    new_phone_numbers = set(source_phone_numbers) - updated_phone_numbers
+                    
+                    if new_emails:
+                        updated_emails.update(new_emails)
+                        found_new_contact_info = True
+                    if new_phone_numbers:
+                        updated_phone_numbers.update(new_phone_numbers)
+                        found_new_contact_info = True
+            
+            # If new contact info found, update the unified lead
+            if found_new_contact_info:
+                update_fields = {
+                    'contact.emails': list(updated_emails),
+                    'contact.phone_numbers': list(updated_phone_numbers),
+                    'metadata.updated_at': datetime.utcnow()
+                }
+                
+                try:
+                    result = unified_collection.update_one(
+                        {'_id': unified_id},
+                        {'$set': update_fields}
+                    )
+                    if result.modified_count > 0:
+                        leads_enriched += 1
+                        logger.info(f"✅ Unified lead {unified_id} enriched with new contact info.")
+                    else:
+                        logger.info(f"ℹ️ Unified lead {unified_id} matched but not modified (no new info or already up-to-date).")
+                except Exception as e:
+                    logger.error(f"❌ Error updating unified lead {unified_id}: {e}")
+            else:
+                logger.debug(f"Unified lead {unified_id}: No new contact info found from sources.")
+                
+        logger.info(f"Enrichment process completed. Total unified leads: {total_unified_leads}, Enriched: {leads_enriched}, Skipped: {leads_skipped}")
+        return {
+            'total_unified_leads': total_unified_leads,
+            'leads_enriched': leads_enriched,
+            'leads_skipped': leads_skipped
+        }
+
     def insert_and_transform_to_unified(self, source_data: List[Dict[str, Any]], platform: str) -> Dict[str, int]:
         """
         Transform and insert or update leads into unified collection.

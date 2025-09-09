@@ -829,12 +829,20 @@ class LeadGenerationOrchestrator:
                 logger.error(f"❌ Error in lead filtering: {e}")
                 results['lead_filtering'] = {'error': str(e)}
 
-            # Step 7: Enrich leads with missing contact information
-            logger.info("✨ Step 7: Enriching leads with contact details...")
+            # Step 7: Enrich leads with missing contact information (from contact_scraper.py)
+            logger.info("✨ Step 7: Enriching leads in 'leadgen_leads' with contact details (using contact_scraper)...")
             await self.enrich_leads_with_contact_scraper()
 
-            # Step 8: Export enriched leads to JSON
-            logger.info("📄 Step 8: Exporting enriched leads to JSON...")
+            # Step 8: Perform comprehensive enrichment for unified_leads
+            logger.info("🌟 Step 8: Performing comprehensive enrichment for 'unified_leads' from all sources...")
+            if self.mongodb_manager:
+                enrichment_stats = self.mongodb_manager.enrich_unified_leads_from_sources()
+                logger.info(f"📊 Unified leads enrichment results: {enrichment_stats}")
+            else:
+                logger.warning("⚠️ MongoDB manager not initialized. Skipping comprehensive unified leads enrichment.")
+
+            # Step 9: Export enriched leads to JSON
+            logger.info("📄 Step 9: Exporting enriched leads to JSON...")
             await self.export_enriched_leads_to_json()
 
             # Step 9: Generate final report

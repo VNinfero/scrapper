@@ -108,32 +108,8 @@ class FacebookScraper:
                     # Transform and insert into unified_leads collection
                     logger.info(f"💾 Attempting to insert into unified_leads collection for {url}...")
                     
-                    data_for_unified_transform = {
-                        "url": extracted_data.get('url'),
-                        "username": extracted_data.get('extracted_data', {}).get('username') or (urlparse(extracted_data['url']).path.split('/')[-1] if extracted_data.get('url_type') == 'profile' and extracted_data.get('url') else None),
-                        "full_name": extracted_data.get('extracted_data', {}).get('name') or extracted_data.get('extracted_data', {}).get('og_title'),
-                        "about": extracted_data.get('extracted_data', {}).get('description') or extracted_data.get('extracted_data', {}).get('og_description'),
-                        "location": extracted_data.get('extracted_data', {}).get('address'),
-                        "emails": extracted_data.get('extracted_data', {}).get('emails', []),
-                        "phone_numbers": extracted_data.get('extracted_data', {}).get('phone_numbers', []),
-                        "address": extracted_data.get('extracted_data', {}).get('address'),
-                        "websites": extracted_data.get('extracted_data', {}).get('websites', []) or ([extracted_data.get('extracted_data', {}).get('og_url')] if extracted_data.get('extracted_data', {}).get('og_url') else []),
-                        "description": extracted_data.get('extracted_data', {}).get('description') or extracted_data.get('extracted_data', {}).get('page_description'),
-                        "scraped_at": extracted_data.get('metadata', {}).get('scraping_timestamp'),
-                        "category": extracted_data.get('extracted_data', {}).get('category') or extracted_data.get('meta_data', {}).get('open_graph', {}).get('og:type')
-                    }
-                    
-                    # Ensure emails and phone_numbers are lists of strings
-                    if 'emails' in data_for_unified_transform and data_for_unified_transform['emails'] and not isinstance(data_for_unified_transform['emails'], list):
-                        data_for_unified_transform['emails'] = [str(data_for_unified_transform['emails'])]
-                    if 'phone_numbers' in data_for_unified_transform and data_for_unified_transform['phone_numbers'] and not isinstance(data_for_unified_transform['phone_numbers'], list):
-                        data_for_unified_transform['phone_numbers'] = [str(data_for_unified_transform['phone_numbers'])]
-                    if 'websites' in data_for_unified_transform and data_for_unified_transform['websites'] and not isinstance(data_for_unified_transform['websites'], list):
-                        data_for_unified_transform['websites'] = [str(data_for_unified_transform['websites'])]
-
-
                     unified_stats = self.mongodb_manager.insert_and_transform_to_unified(
-                        [data_for_unified_transform], 'facebook'
+                        [extracted_data], 'facebook'
                     )
                     
                     logger.info(f"✅ Unified insertion result for {url}: Success: {unified_stats['success_count']}, Updated: {unified_stats['updated_count']}, Failed: {unified_stats['failure_count']}")
