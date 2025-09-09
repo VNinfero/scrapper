@@ -12,46 +12,33 @@ import re
 import time
 from typing import Dict, Any, Optional, List
 from bs4 import BeautifulSoup
+from playwright.async_api import Page, BrowserContext # Add this import
 from yt_scraper.browser_manager import YouTubeBrowserManager
 import zstandard as zstd
 
 class AdvancedYouTubeExtractor:
     """Advanced YouTube extractor with network request capture"""
     
-    def __init__(self, headless: bool = True, enable_anti_detection: bool = True, is_mobile: bool = False):
-        self.browser_manager = YouTubeBrowserManager(headless=headless, enable_anti_detection=enable_anti_detection, is_mobile=is_mobile)
+    def __init__(self, browser_manager: YouTubeBrowserManager, is_mobile: bool = False):
+        self.browser_manager = browser_manager
         self.network_requests = []
         self.api_responses = {}
         
     async def start(self) -> None:
-        """Initialize browser manager with network monitoring"""
-        print("Starting YouTube browser manager...")
-        await self.browser_manager.start()
-        print("✓ YouTube browser manager started")
-        
-        # Ensure page is available
-        if not self.browser_manager.page:
-            raise RuntimeError("Browser page not available after start")
-        
-        print(f"✓ Browser page available: {self.browser_manager.page}")
-        
-        # Set up network request monitoring
-        await self._setup_network_monitoring()
+        """Browser manager is managed externally. No action needed here."""
+        print("AdvancedYouTubeExtractor initialized. Browser manager is handled externally.")
         
     async def stop(self) -> None:
-        """Clean up browser resources"""
-        await self.browser_manager.stop()
+        """Browser manager is managed externally. No action needed here."""
+        print("AdvancedYouTubeExtractor stopped. Browser manager is handled externally.")
         
-    async def _setup_network_monitoring(self) -> None:
+    async def _setup_network_monitoring(self, page: Page) -> None:
         """Set up network request monitoring for YouTube"""
-        if not self.browser_manager.page:
-            raise RuntimeError("Browser page not available")
-            
-        print(f"✓ Setting up network monitoring for YouTube page: {self.browser_manager.page}")
+        print(f"✓ Setting up network monitoring for YouTube page: {page}")
         
         # Listen for network requests using proper event handling
-        self.browser_manager.page.on("request", self._on_request)
-        self.browser_manager.page.on("response", self._on_response)
+        page.on("request", self._on_request)
+        page.on("response", self._on_response)
         
         print("✓ YouTube network monitoring setup completed")
         
@@ -158,7 +145,302 @@ class AdvancedYouTubeExtractor:
                 
             except Exception as e:
                 print(f"Error processing YouTube response: {e}")
+    async def _navigate_to(self, page: Page, url: str, wait_time: int = 5) -> None:
+        """Navigate to URL with human-like delays and anti-detection measures"""
+        # Apply network obfuscation delay
+        if self.browser_manager.enable_anti_detection and self.browser_manager.anti_detection:
+            delay = await self.browser_manager.anti_detection.calculate_request_delay()
+            await asyncio.sleep(delay)
+        else:
+            # Random delay to mimic human behavior
+            await asyncio.sleep(random.uniform(1, 3))
+        
+        try:
+            await page.goto(url, wait_until='networkidle', timeout=30000)
+        except Exception:
+            # Fallback to domcontentloaded if networkidle fails
+            await page.goto(url, wait_until='domcontentloaded', timeout=20000)
+        
+        # Update request count for anti-detection tracking
+        if self.browser_manager.enable_anti_detection and self.browser_manager.anti_detection:
+            self.browser_manager.anti_detection.request_count += 1
+            self.browser_manager.anti_detection.last_request_time = time.time()
+        
+        # Wait for page to load
+        await asyncio.sleep(wait_time)
+
+    async def _close_youtube_popups(self, page: Page) -> bool:
+        """Attempt to close YouTube popups (cookies, notifications, etc.)"""
+        try:
+            # Wait a bit for popups to load
+            await asyncio.sleep(3)
+            
+            popups_closed = False
+            
+            # Common selectors for YouTube popup close buttons
+            close_selectors = [
+                # Cookie consent
+                'button[aria-label="Accept all"]',
+                'button[aria-label="Accept the use of cookies and other data for the purposes described"]',
+                'button:has-text("Accept all")',
+                'button:has-text("I agree")',
+                'tp-yt-paper-button:has-text("ACCEPT ALL")',
+                
+                # Notification popups
+                'button[aria-label="No thanks"]',
+                'button[aria-label="Not now"]',
+                'button:has-text("No thanks")',
+                'button:has-text("Not now")',
+                'yt-button-renderer:has-text("No thanks")',
+                
+                # Generic close buttons
+                'button[aria-label="Close"]',
+                'button[aria-label="Dismiss"]',
+                'button[title="Close"]',
+                'button[title="Dismiss"]',
+                'yt-icon-button[aria-label="Close"]',
+                'yt-icon-button[aria-label="Dismiss"]',
+                
+                # YouTube-specific close buttons
+                'ytd-button-renderer[aria-label="No thanks"]',
+                'ytd-button-renderer[aria-label="Not now"]',
+                'paper-button:has-text("No thanks")',
+                'paper-button:has-text("Not now")',
+                
+                # Cookie banner specific
+                '#dialog button:has-text("Accept")',
+                '#dialog button:has-text("OK")',
+                '.consent-bump-lightbox button:has-text("I AGREE")',
+                
+                # Ad overlay close buttons
+                '.ytp-ad-overlay-close-button',
+                '.ytp-ad-skip-button-modern',
+                'button.ytp-ad-skip-button'
+            ]
+            
+            for selector in close_selectors:
+                try:
+                    # Wait a bit for elements to be ready
+                    await asyncio.sleep(1)
+                    
+                    # Check if element exists and is visible
+                    element = await page.query_selector(selector)
+                    if element:
+                        is_visible = await element.is_visible()
+                        if is_visible:
+                            print(f"  - Found popup close button with selector: {selector}")
+                            
+                            # Click the close button
+                            await element.click()
+                            print(f"  - Clicked popup close button")
+                            popups_closed = True
+                            
+                            # Wait for popup to close
+                            await asyncio.sleep(2)
+                            
+                except Exception as e:
+                    # Continue with next selector if this one fails
+                    continue
+            
+            # Try pressing Escape key as fallback
+            if not popups_closed:
+                print(f"  - No popup close buttons found, trying Escape key")
+                await page.keyboard.press('Escape')
+                await asyncio.sleep(2)
+                popups_closed = True
+            
+            return popups_closed
+                
+        except Exception as e:
+            print(f"  - Error closing popups: {e}")
+            return False
+
+    async def _navigate_to_with_popup_close(self, page: Page, url: str, wait_time: int = 5) -> bool:
+        """Navigate to URL and attempt to close any popups"""
+        # Navigate to URL
+        await self._navigate_to(page, url, wait_time)
+        
+        # Try to close popups
+        popup_closed = await self._close_youtube_popups(page)
+        
+        return popup_closed
+        
+    async def _wait_for_video_load(self, page: Page, timeout: int = 30) -> bool:
+        """Wait for YouTube video to load"""
+        try:
+            # Wait for video player to be ready
+            await page.wait_for_selector('#movie_player', timeout=timeout * 1000)
+            
+            # Wait additional time for metadata to load
+            await asyncio.sleep(3)
+            
+            return True
+        except Exception as e:
+            print(f"Video load timeout: {e}")
+            return False
+
+    async def _wait_for_channel_load(self, page: Page, timeout: int = 30) -> bool:
+        """Wait for YouTube channel page to load"""
+        try:
+            # Wait for channel header to be ready
+            await page.wait_for_selector('ytd-channel-header-renderer', timeout=timeout * 1000)
+            
+            # Wait additional time for metadata to load
+            await asyncio.sleep(3)
+            
+            return True
+        except Exception as e:
+            print(f"Channel load timeout: {e}")
+            return False
     
+    async def _navigate_to(self, page: Page, url: str, wait_time: int = 5) -> None:
+        """Navigate to URL with human-like delays and anti-detection measures"""
+        # Apply network obfuscation delay
+        if self.browser_manager.enable_anti_detection and self.browser_manager.anti_detection:
+            delay = await self.browser_manager.anti_detection.calculate_request_delay()
+            await asyncio.sleep(delay)
+        else:
+            # Random delay to mimic human behavior
+            await asyncio.sleep(random.uniform(1, 3))
+        
+        try:
+            await page.goto(url, wait_until='networkidle', timeout=30000)
+        except Exception:
+            # Fallback to domcontentloaded if networkidle fails
+            await page.goto(url, wait_until='domcontentloaded', timeout=20000)
+        
+        # Update request count for anti-detection tracking
+        if self.browser_manager.enable_anti_detection and self.browser_manager.anti_detection:
+            self.browser_manager.anti_detection.request_count += 1
+            self.browser_manager.anti_detection.last_request_time = time.time()
+        
+        # Wait for page to load
+        await asyncio.sleep(wait_time)
+
+    async def _close_youtube_popups(self, page: Page) -> bool:
+        """Attempt to close YouTube popups (cookies, notifications, etc.)"""
+        try:
+            # Wait a bit for popups to load
+            await asyncio.sleep(3)
+            
+            popups_closed = False
+            
+            # Common selectors for YouTube popup close buttons
+            close_selectors = [
+                # Cookie consent
+                'button[aria-label="Accept all"]',
+                'button[aria-label="Accept the use of cookies and other data for the purposes described"]',
+                'button:has-text("Accept all")',
+                'button:has-text("I agree")',
+                'tp-yt-paper-button:has-text("ACCEPT ALL")',
+                
+                # Notification popups
+                'button[aria-label="No thanks"]',
+                'button[aria-label="Not now"]',
+                'button:has-text("No thanks")',
+                'button:has-text("Not now")',
+                'yt-button-renderer:has-text("No thanks")',
+                
+                # Generic close buttons
+                'button[aria-label="Close"]',
+                'button[aria-label="Dismiss"]',
+                'button[title="Close"]',
+                'button[title="Dismiss"]',
+                'yt-icon-button[aria-label="Close"]',
+                'yt-icon-button[aria-label="Dismiss"]',
+                
+                # YouTube-specific close buttons
+                'ytd-button-renderer[aria-label="No thanks"]',
+                'ytd-button-renderer[aria-label="Not now"]',
+                'paper-button:has-text("No thanks")',
+                'paper-button:has-text("Not now")',
+                
+                # Cookie banner specific
+                '#dialog button:has-text("Accept")',
+                '#dialog button:has-text("OK")',
+                '.consent-bump-lightbox button:has-text("I AGREE")',
+                
+                # Ad overlay close buttons
+                '.ytp-ad-overlay-close-button',
+                '.ytp-ad-skip-button-modern',
+                'button.ytp-ad-skip-button'
+            ]
+            
+            for selector in close_selectors:
+                try:
+                    # Wait a bit for elements to be ready
+                    await asyncio.sleep(1)
+                    
+                    # Check if element exists and is visible
+                    element = await page.query_selector(selector)
+                    if element:
+                        is_visible = await element.is_visible()
+                        if is_visible:
+                            print(f"  - Found popup close button with selector: {selector}")
+                            
+                            # Click the close button
+                            await element.click()
+                            print(f"  - Clicked popup close button")
+                            popups_closed = True
+                            
+                            # Wait for popup to close
+                            await asyncio.sleep(2)
+                            
+                except Exception as e:
+                    # Continue with next selector if this one fails
+                    continue
+            
+            # Try pressing Escape key as fallback
+            if not popups_closed:
+                print(f"  - No popup close buttons found, trying Escape key")
+                await page.keyboard.press('Escape')
+                await asyncio.sleep(2)
+                popups_closed = True
+            
+            return popups_closed
+                
+        except Exception as e:
+            print(f"  - Error closing popups: {e}")
+            return False
+
+    async def _navigate_to_with_popup_close(self, page: Page, url: str, wait_time: int = 5) -> bool:
+        """Navigate to URL and attempt to close any popups"""
+        # Navigate to URL
+        await self._navigate_to(page, url, wait_time)
+        
+        # Try to close popups
+        popup_closed = await self._close_youtube_popups(page)
+        
+        return popup_closed
+        
+    async def _wait_for_video_load(self, page: Page, timeout: int = 30) -> bool:
+        """Wait for YouTube video to load"""
+        try:
+            # Wait for video player to be ready
+            await page.wait_for_selector('#movie_player', timeout=timeout * 1000)
+            
+            # Wait additional time for metadata to load
+            await asyncio.sleep(3)
+            
+            return True
+        except Exception as e:
+            print(f"Video load timeout: {e}")
+            return False
+
+    async def _wait_for_channel_load(self, page: Page, timeout: int = 30) -> bool:
+        """Wait for YouTube channel page to load"""
+        try:
+            # Wait for channel header to be ready
+            await page.wait_for_selector('ytd-channel-header-renderer', timeout=timeout * 1000)
+            
+            # Wait additional time for metadata to load
+            await asyncio.sleep(3)
+            
+            return True
+        except Exception as e:
+            print(f"Channel load timeout: {e}")
+            return False
+
     async def extract_youtube_data(self, url: str) -> Dict[str, Any]:
         """Extract YouTube data from a specific URL"""
         print(f"Extracting YouTube data from: {url}")
@@ -188,17 +470,25 @@ class AdvancedYouTubeExtractor:
         self.network_requests = []
         self.api_responses = {}
         
+        context = None
+        page = None
         try:
+            context = await self.browser_manager.get_context()
+            page = await context.new_page()
+
+            # Set up network request monitoring for this page
+            await self._setup_network_monitoring(page)
+            
             # Navigate to the page and close popup
-            popup_closed = await self.browser_manager.navigate_to_with_popup_close(url)
+            popup_closed = await self._navigate_to_with_popup_close(page, url)
             print(f"✓ Navigation completed, popup closed: {popup_closed}")
             
             # Wait for page to load based on content type
             page_type = self._determine_page_type(url)
             if page_type == 'video':
-                await self.browser_manager.wait_for_video_load()
+                await self._wait_for_video_load(page)
             elif page_type == 'channel':
-                await self.browser_manager.wait_for_channel_load()
+                await self._wait_for_channel_load(page)
             elif page_type == 'shorts':
                 await asyncio.sleep(7)  # Shorts need a bit more time to load
             else:
@@ -209,8 +499,8 @@ class AdvancedYouTubeExtractor:
             await asyncio.sleep(additional_wait)
             
             # Get page content
-            html_content = await self.browser_manager.get_page_content()
-            rendered_text = await self.browser_manager.get_rendered_text()
+            html_content = await page.content()
+            rendered_text = await page.text_content('body')
 
             # ========== CHECK IF CONTENT IS TRAVEL RELATED ==========
             is_travel_related = await self._is_travel_related_content(rendered_text, html_content, url)
@@ -226,7 +516,7 @@ class AdvancedYouTubeExtractor:
                 }
             
             print(f"✓ Content is travel related, proceeding with extraction")
-
+            
             # Extract data from different sources
             extracted_data = {
                 'url': url,
@@ -280,6 +570,11 @@ class AdvancedYouTubeExtractor:
                 'error': str(e),
                 'success': False
             }
+        finally:
+            if page:
+                await page.close()
+            if context:
+                await self.browser_manager.release_context(context)
     
     def _is_valid_youtube_url(self, url: str) -> bool:
         """Validate if URL is a proper YouTube URL"""
@@ -738,10 +1033,10 @@ class AdvancedYouTubeExtractor:
                 analysis['api_requests'] += 1
             
             if request.get('type') == 'response':
-                status = request.get('status', 0)
+                status = str(request.get('status', 0)) # Convert status to string
                 analysis['response_statuses'][status] = analysis['response_statuses'].get(status, 0) + 1
                 
-                if 200 <= status < 300:
+                if 200 <= int(status) < 300: # Convert status to int for comparison
                     analysis['successful_responses'] += 1
                 else:
                     analysis['failed_responses'] += 1
@@ -962,18 +1257,18 @@ class AdvancedYouTubeExtractor:
         """Extract channel data"""
         return await self.extract_youtube_data(channel_url)
     
-    async def get_stealth_report(self) -> Dict[str, Any]:
+    async def get_stealth_report(self, page: Page) -> Dict[str, Any]:
         """Get comprehensive stealth report from browser manager"""
-        return await self.browser_manager.get_stealth_report()
+        return await self.browser_manager.anti_detection.get_stealth_report(page)
     
-    async def execute_human_behavior(self, behavior_type: str, **kwargs) -> None:
+    async def execute_human_behavior(self, page: Page, behavior_type: str, **kwargs) -> None:
         """Execute human-like behavior on the page"""
         if behavior_type == 'scroll':
-            await self.browser_manager.execute_human_scroll(**kwargs)
+            await execute_human_behavior(page, self.browser_manager.anti_detection, 'scroll', **kwargs)
         elif behavior_type == 'mousemove':
-            await self.browser_manager.execute_human_mouse_move(**kwargs)
+            await execute_human_behavior(page, self.browser_manager.anti_detection, 'mousemove', **kwargs)
         elif behavior_type == 'click':
-            await self.browser_manager.execute_human_click(**kwargs)
+            await execute_human_behavior(page, self.browser_manager.anti_detection, 'click', **kwargs)
         else:
             raise ValueError(f"Unknown behavior type: {behavior_type}")
 
@@ -1180,18 +1475,29 @@ async def test_advanced_youtube_extractor():
     print("TESTING ADVANCED YOUTUBE EXTRACTOR WITH ANTI-DETECTION")
     print("=" * 80)
     
-    extractor = AdvancedYouTubeExtractor(headless=False, enable_anti_detection=True)  # Enable anti-detection
+    # Initialize browser manager once for the test
+    browser_manager = YouTubeBrowserManager(headless=False, enable_anti_detection=True)
+    await browser_manager.start()
+
+    extractor = AdvancedYouTubeExtractor(browser_manager=browser_manager)
     
     try:
+        # Extractor's start method is now a no-op, as browser manager is external
         await extractor.start()
-        print("✓ Advanced YouTube extractor started successfully")
+        print("✓ Advanced YouTube extractor started successfully (browser manager external)")
         
         # Test anti-detection features
         print("\n" + "=" * 60)
         print("ANTI-DETECTION FEATURES TEST")
         print("=" * 60)
         
-        stealth_report = await extractor.get_stealth_report()
+        # Need a page to get stealth report
+        context = await browser_manager.get_context()
+        page = await context.new_page()
+        stealth_report = await extractor.get_stealth_report(page)
+        await page.close()
+        await browser_manager.release_context(context)
+
         print("✓ Stealth report generated:")
         print(f"  - Fingerprint Evasion: {stealth_report.get('fingerprint_evasion', {}).get('enabled', False)}")
         print(f"  - Behavioral Mimicking: {stealth_report.get('behavioral_mimicking', {}).get('enabled', False)}")
@@ -1284,7 +1590,6 @@ async def test_advanced_youtube_extractor():
                 print(f"  - Content Length: {data.get('html_length', 0):,} chars")
                 print(f"  - Network Requests: {data.get('network_requests', 0)}")
                 print(f"  - API Responses: {data.get('api_responses', 0)}")
-                print(f"  - Page Type: {data.get('page_type', 'unknown')}")
             else:
                 print(f"  - Error: {data.get('error', 'Unknown error')}")
         
@@ -1296,7 +1601,8 @@ async def test_advanced_youtube_extractor():
         traceback.print_exc()
         raise
     finally:
-        await extractor.stop()
+        # Browser manager stop is handled externally
+        await browser_manager.stop()
         print("\n✓ YouTube Advanced extractor cleanup completed")
 
 
@@ -1306,18 +1612,15 @@ async def example_clean_youtube_extraction():
     print("EXAMPLE: CLEAN YOUTUBE DATA EXTRACTION")
     print("=" * 80)
     
-    # Example YouTube URLs to extract data from
-    example_urls = [
-        "https://www.youtube.com/watch?v=Jbv1mIjWRpc",  # Famous video
-        "https://www.youtube.com/shorts/YIe4jPsvv5g",        # Example shorts
-        "https://www.youtube.com/@stillwatchingnetflix"              # YouTube channel
-    ]
-    
-    extractor = AdvancedYouTubeExtractor(headless=True)  # Set to True for faster execution
+    # Initialize browser manager once for the example
+    browser_manager = YouTubeBrowserManager(headless=True)  # Set to True for faster execution
+    await browser_manager.start()
+
+    extractor = AdvancedYouTubeExtractor(browser_manager=browser_manager)
     
     try:
-        await extractor.start()
-        print("✓ YouTube extractor started successfully")
+        await extractor.start() # Extractor's start method is now a no-op
+        print("✓ YouTube extractor started successfully (browser manager external)")
         
         # Extract and save clean data from URLs
         await extractor.extract_and_save_clean_data_from_urls(example_urls, "example_youtube_clean_output.json")
@@ -1330,7 +1633,8 @@ async def example_clean_youtube_extraction():
         import traceback
         traceback.print_exc()
     finally:
-        await extractor.stop()
+        # Browser manager stop is handled externally
+        await browser_manager.stop()
         print("✓ YouTube extractor cleanup completed")
 
 

@@ -40,9 +40,11 @@ class MongoDBManager:
         # Collection names for each scraper
         self.collections = {
             'instagram': 'instagram_leads',
-            'linkedin': 'linkedin_leads', 
+            'linkedin': 'linkedin_leads',
             'web': 'web_leads',
             'youtube': 'youtube_leads',
+            'facebook': 'facebook_leads', # Add Facebook collection
+            'twitter': 'twitter_leads',   # Add Twitter collection
             'unified': 'unified_leads'  # New unified collection
         }
 
@@ -121,6 +123,18 @@ class MongoDBManager:
             unified_collection.create_index([("company_type", 1)])
             unified_collection.create_index([("bdr", 1)])
 
+            # Facebook collection indexes
+            facebook_collection = self.db[self.collections['facebook']]
+            facebook_collection.create_index([("url", 1)], unique=True)
+            facebook_collection.create_index([("username", 1)])
+            facebook_collection.create_index([("scraped_at", -1)])
+
+            # Twitter collection indexes
+            twitter_collection = self.db[self.collections['twitter']]
+            twitter_collection.create_index([("url", 1)], unique=True)
+            twitter_collection.create_index([("username", 1)])
+            twitter_collection.create_index([("scraped_at", -1)])
+
             logger.info("✅ Database indexes created successfully")
             
         except Exception as e:
@@ -156,17 +170,29 @@ class MongoDBManager:
             # Add/update metadata
             lead_data['metadata']['scraped_at'] = datetime.utcnow()
             
-            # Insert into unified collection
-            result = self.db[self.collections['unified']].insert_one(lead_data)
+            # Use update_one with upsert=True to insert or update
+            # We use _id for update if present, otherwise url for upsert
+            # Always use 'url' as the primary identifier for upsert operations
+            # This ensures that documents are updated based on their unique URL,
+            # preventing duplicates if _id changes or is re-generated.
+            result = self.db[self.collections['unified']].replace_one(
+                {"url": lead_data['url']}, # Filter by URL
+                lead_data,
+                upsert=True # Insert if not found, update if found
+            )
             
-            logger.info(f"✅ Unified lead inserted with ID: {result.inserted_id}")
-            return True
-            
-        except DuplicateKeyError:
-            logger.warning(f"⚠️ Unified lead already exists for URL: {lead_data.get('url')}")
-            return False
+            if result.upserted_id:
+                logger.info(f"✅ Unified lead inserted with ID: {result.upserted_id}")
+                return True
+            elif result.modified_count > 0:
+                logger.info(f"🔄 Unified lead updated for URL: {lead_data.get('url')}")
+                return True
+            else:
+                logger.info(f"ℹ️ Unified lead already exists and no modifications needed for URL: {lead_data.get('url')}")
+                return True # Consider it a success if it exists and no changes needed.
+                
         except Exception as e:
-            logger.error(f"❌ Failed to insert unified lead: {e}")
+            logger.error(f"❌ Failed to insert/update unified lead: {e}")
             return False
     
     def insert_batch_unified_leads(self, leads_data: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -266,6 +292,64 @@ class MongoDBManager:
         except Exception as e:
             logger.error(f"❌ Failed to search unified leads: {e}")
             return []
+
+    def update_unified_lead_contact_info(self, url: str, new_contact_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Update contact information for an existing unified lead based on its URL.
+        This method will merge new email and phone number lists.
+
+        Args:
+            url: The URL of the unified lead to update.
+            new_contact_data: A dictionary containing new 'emails' (list) and 'phone_numbers' (list).
+
+        Returns:
+            bool: True if the update was successful, False otherwise.
+        """
+        try:
+            unified_collection = self.db[self.collections['unified']]
+            
+            # Find the existing document
+            existing_lead = unified_collection.find_one({"url": url})
+            if not existing_lead:
+                logger.warning(f"⚠️ No unified lead found with URL: {url} for updating contact info.")
+                return None
+
+            # Prepare update operation
+            update_fields = {}
+            
+            # Merge emails
+            existing_emails = set(existing_lead.get('contact', {}).get('emails', []))
+            new_emails = set(new_contact_data.get('emails', []))
+            merged_emails = list(existing_emails.union(new_emails))
+            if merged_emails:
+                update_fields['contact.emails'] = merged_emails
+
+            # Merge phone numbers
+            existing_phone_numbers = set(existing_lead.get('contact', {}).get('phone_numbers', []))
+            new_phone_numbers = set(new_contact_data.get('phone_numbers', []))
+            merged_phone_numbers = list(existing_phone_numbers.union(new_phone_numbers))
+            if merged_phone_numbers:
+                update_fields['contact.phone_numbers'] = merged_phone_numbers
+
+            if not update_fields:
+                logger.info(f"ℹ️ No new contact information to merge for URL: {url}.")
+                return existing_lead # Return existing lead if nothing to update
+
+            result = unified_collection.update_one(
+                {"url": url},
+                {"$set": update_fields, "$currentDate": {"metadata.updated_at": True}}
+            )
+
+            if result.modified_count > 0:
+                logger.info(f"✅ Unified lead contact info updated for URL: {url}")
+                return unified_collection.find_one({"url": url}) # Return the updated document
+            else:
+                logger.warning(f"⚠️ Unified lead contact info not modified for URL: {url}. Matched: {result.matched_count}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Failed to update unified lead contact info for URL {url}: {e}")
+            return None
 
     def insert_instagram_lead(self, lead_data: Dict[str, Any]) -> bool:
         """
@@ -379,6 +463,34 @@ class MongoDBManager:
             logger.error(f"❌ Failed to insert YouTube lead: {e}")
             return False
     
+    def insert_facebook_lead(self, lead_data: Dict[str, Any]) -> bool:
+        """
+        Insert Facebook lead data into MongoDB
+        
+        Args:
+            lead_data: Facebook lead data dictionary
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            # Add metadata
+            lead_data['scraped_at'] = datetime.utcnow()
+            lead_data['source'] = 'facebook_scraper'
+            
+            # Insert into Facebook collection
+            result = self.db[self.collections['facebook']].insert_one(lead_data)
+            
+            logger.info(f"✅ Facebook lead inserted with ID: {result.inserted_id}")
+            return True
+            
+        except DuplicateKeyError:
+            logger.warning(f"⚠️ Facebook lead already exists for URL: {lead_data.get('url')}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Failed to insert Facebook lead: {e}")
+            return False
+
     def insert_batch_leads(self, leads_data: List[Dict[str, Any]], source: str) -> Dict[str, int]:
         """
         Insert multiple leads from a batch operation
@@ -635,7 +747,7 @@ class MongoDBManager:
     def transform_instagram_to_unified(self, instagram_data: Dict[str, Any]) -> Dict[str, Any]:
         """Transform Instagram data to unified schema"""
         unified_data = {
-            "url": instagram_data.get('url', ""),
+            "url": f"https://www.instagram.com/{instagram_data['username']}" if instagram_data.get('username') else "",
             "platform": "instagram",
             "content_type": instagram_data.get('content_type', ""),
             "source": "instagram-scraper",
@@ -648,8 +760,8 @@ class MongoDBManager:
                 "employee_count": None
             },
             "contact": {
-                "emails": [instagram_data.get('business_email')] if instagram_data.get('business_email') else [],
-                "phone_numbers": [instagram_data.get('business_phone_number')] if instagram_data.get('business_phone_number') else [],
+                "emails": instagram_data.get('emails', []),
+                "phone_numbers": instagram_data.get('phone_numbers', []),
                 "address": None,
                 "websites": [],
                 "social_media_handles": {
@@ -748,8 +860,8 @@ class MongoDBManager:
                 "employee_count": str(linkedin_data.get('employee_count')) if linkedin_data.get('employee_count') else None
             },
             "contact": {
-                "emails": [],
-                "phone_numbers": [],
+                "emails": linkedin_data.get('emails', []),
+                "phone_numbers": linkedin_data.get('phone_numbers', []),
                 "address": linkedin_data.get('address', ""),
                 "websites": [linkedin_data.get('website')] if linkedin_data.get('website') else [],
                 "social_media_handles": {
@@ -1106,6 +1218,115 @@ class MongoDBManager:
                 data[field] = None
         
         return data
+    def transform_facebook_to_unified(self, facebook_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform Facebook data to unified schema"""
+        unified_data = {
+            "url": facebook_data.get('url', ""),
+            "platform": "facebook",
+            "content_type": "profile",
+            "source": "facebook-scraper",
+            "profile": {
+                "username": facebook_data.get('username', ""),
+                "full_name": facebook_data.get('full_name', ""),
+                "bio": facebook_data.get('about', ""),
+                "location": facebook_data.get('location', ""),
+                "job_title": None,
+                "employee_count": None
+            },
+            "contact": {
+                "emails": [facebook_data.get('email')] if facebook_data.get('email') else [],
+                "phone_numbers": [facebook_data.get('phone')] if facebook_data.get('phone') else [],
+                "address": facebook_data.get('address', ""),
+                "websites": [facebook_data.get('website')] if facebook_data.get('website') else [],
+                "social_media_handles": {
+                    "instagram": None,
+                    "twitter": None,
+                    "facebook": facebook_data.get('username'),
+                    "linkedin": None,
+                    "youtube": None,
+                    "tiktok": None,
+                    "other": []
+                },
+                "bio_links": []
+            },
+            "content": {
+                "caption": facebook_data.get('description', ""),
+                "upload_date": None,
+                "channel_name": None,
+                "author_name": facebook_data.get('full_name')
+            },
+            "metadata": {
+                "scraped_at": datetime.utcnow(),
+                "data_quality_score": "0.45"
+            },
+            "industry": None,
+            "revenue": None,
+            "lead_category": None,
+            "lead_sub_category": None,
+            "company_name": facebook_data.get('full_name', ""),
+            "company_type": None,
+            "decision_makers": None,
+            "bdr": "AKG",
+            "product_interests": None,
+            "timeline": None,
+            "interest_level": None
+        }
+        return self._clean_unified_data(unified_data)
+
+    def transform_twitter_to_unified(self, twitter_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform Twitter data to unified schema"""
+        unified_data = {
+            "url": twitter_data.get('url', ""),
+            "platform": "twitter",
+            "content_type": "profile",
+            "source": "twitter-scraper",
+            "profile": {
+                "username": twitter_data.get('username', ""),
+                "full_name": twitter_data.get('full_name', ""),
+                "bio": twitter_data.get('bio', ""),
+                "location": twitter_data.get('location', ""),
+                "job_title": None,
+                "employee_count": None
+            },
+            "contact": {
+                "emails": [twitter_data.get('email')] if twitter_data.get('email') else [],
+                "phone_numbers": [twitter_data.get('phone')] if twitter_data.get('phone') else [],
+                "address": None,
+                "websites": [twitter_data.get('website')] if twitter_data.get('website') else [],
+                "social_media_handles": {
+                    "instagram": None,
+                    "twitter": twitter_data.get('username'),
+                    "facebook": None,
+                    "linkedin": None,
+                    "youtube": None,
+                    "tiktok": None,
+                    "other": []
+                },
+                "bio_links": []
+            },
+            "content": {
+                "caption": twitter_data.get('description', ""),
+                "upload_date": None,
+                "channel_name": None,
+                "author_name": twitter_data.get('full_name')
+            },
+            "metadata": {
+                "scraped_at": datetime.utcnow(),
+                "data_quality_score": "0.45"
+            },
+            "industry": None,
+            "revenue": None,
+            "lead_category": None,
+            "lead_sub_category": None,
+            "company_name": twitter_data.get('full_name', ""),
+            "company_type": None,
+            "decision_makers": None,
+            "bdr": "AKG",
+            "product_interests": None,
+            "timeline": None,
+            "interest_level": None
+        }
+        return self._clean_unified_data(unified_data)
 
     def ensure_unified_schema_compliance(self, collection_name: str = 'unified') -> Dict[str, int]:
         """
@@ -1171,35 +1392,39 @@ class MongoDBManager:
         except Exception as e:
             logger.error(f"❌ Failed to ensure schema compliance: {e}")
             return {'error': str(e)}
-
+    
     def insert_and_transform_to_unified(self, source_data: List[Dict[str, Any]], platform: str) -> Dict[str, int]:
         """
-        Transform and insert leads into unified collection
+        Transform and insert or update leads into unified collection.
+        If a lead with the same URL already exists, it attempts to update its contact information.
         
         Args:
             source_data: List of platform-specific lead data
-            platform: Source platform ('instagram', 'linkedin', 'youtube', 'web')
+            platform: Source platform ('instagram', 'linkedin', 'youtube', 'web', 'facebook', 'twitter')
             
         Returns:
             Dict with success and failure counts
         """
         success_count = 0
         failure_count = 0
-        duplicate_count = 0
+        updated_count = 0 # Renamed from duplicate_count for clarity
         
         transform_functions = {
             'instagram': self.transform_instagram_to_unified,
             'linkedin': self.transform_linkedin_to_unified,
             'youtube': self.transform_youtube_to_unified,
-            'web': self.transform_web_to_unified
+            'web': self.transform_web_to_unified,
+            'facebook': self.transform_facebook_to_unified,
+            'twitter': self.transform_twitter_to_unified
         }
         
         transform_func = transform_functions.get(platform)
         if not transform_func:
             logger.error(f"❌ No transform function for platform: {platform}")
-            return {'success_count': 0, 'duplicate_count': 0, 'failure_count': len(source_data), 'total_processed': len(source_data)}
+            return {'success_count': 0, 'updated_count': 0, 'failure_count': len(source_data), 'total_processed': len(source_data)}
         
         for data in source_data:
+            unified_data = None
             try:
                 # Transform to unified schema
                 unified_data = transform_func(data)
@@ -1208,24 +1433,43 @@ class MongoDBManager:
                     logger.warning(f"⚠️ Skipped invalid {platform} data: {data.get('full_name') or data.get('author_name')}")
                     continue
                     
-                # Insert into unified collection
+                # Attempt to insert into unified collection
                 result = self.db[self.collections['unified']].insert_one(unified_data)
                 success_count += 1
                 
             except DuplicateKeyError:
-                duplicate_count += 1
-                logger.warning(f"⚠️ Duplicate unified lead for URL: {data.get('url')}")
+                # If duplicate, try to update existing record with new contact info
+                if unified_data and unified_data.get('url'):
+                    new_contact_info = {
+                        "emails": unified_data.get('contact', {}).get('emails', []),
+                        "phone_numbers": unified_data.get('contact', {}).get('phone_numbers', [])
+                    }
+                    updated_doc = self.update_unified_lead_contact_info(unified_data.get('url'), new_contact_info)
+                    if updated_doc:
+                        updated_count += 1 # Count as an update
+                        logger.info(f"✅ Unified lead contact info updated for duplicate URL: {unified_data.get('url')}")
+                        # Return the updated document so it can be added to all_processed_data
+                        return {'success_count': success_count, 'updated_count': updated_count, 'failure_count': failure_count, 'unified_data': updated_doc}
+                    else:
+                        failure_count += 1
+                        logger.error(f"❌ Failed to update contact info for duplicate unified lead: {unified_data.get('url')}")
+                else:
+                    failure_count += 1
+                    logger.warning(f"⚠️ Duplicate unified lead but unable to update (missing URL or data): {data.get('url')}")
+                # Even if duplicate, the unified_data should be available for processing in all_processed_data
+                return {'success_count': success_count, 'updated_count': updated_count, 'failure_count': failure_count, 'unified_data': unified_data}
             except Exception as e:
                 failure_count += 1
-                logger.error(f"❌ Failed to transform and insert unified lead: {e}")
+                logger.error(f"❌ Failed to transform and insert/update unified lead: {e}")
         
-        logger.info(f"📊 Unified transformation completed for {platform} - Success: {success_count}, Duplicates: {duplicate_count}, Failures: {failure_count}")
+        logger.info(f"📊 Unified transformation completed for {platform} - Success: {success_count}, Updated: {updated_count}, Failures: {failure_count}")
         
         return {
             'success_count': success_count,
-            'duplicate_count': duplicate_count,
+            'updated_count': updated_count,
             'failure_count': failure_count,
-            'total_processed': len(source_data)
+            'total_processed': len(source_data),
+            'unified_data': unified_data # Return unified_data even if no insert/update happened
         }
 
 # Global MongoDB manager instance
@@ -1237,3 +1481,4 @@ def get_mongodb_manager() -> MongoDBManager:
     if mongodb_manager is None:
         mongodb_manager = MongoDBManager()
     return mongodb_manager
+

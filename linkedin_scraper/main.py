@@ -34,20 +34,13 @@ from database.mongodb_manager import get_mongodb_manager
 class LinkedInScraperMain:
     """Main LinkedIn Scraper class with simplified interface"""
     
-    def __init__(self, headless: bool = True, enable_anti_detection: bool = True, use_mongodb: bool = True):
+    def __init__(self, headless: bool = True, enable_anti_detection: bool = True): # Removed use_mongodb parameter
         self.headless = headless
         self.enable_anti_detection = enable_anti_detection
-        self.use_mongodb = use_mongodb
+        self.use_mongodb = False # Force to False as contact_scraper handles MongoDB
         self.extractor = None
         
-        # Initialize MongoDB manager if needed
-        if self.use_mongodb:
-            try:
-                self.mongodb_manager = get_mongodb_manager()
-                print("✅ MongoDB connection initialized")
-            except Exception as e:
-                print(f"⚠️ Failed to initialize MongoDB: {e}")
-                self.use_mongodb = False
+        # MongoDB manager is no longer initialized here as it's handled by contact_scraper.py
     
     def _is_signup_data(self, structured_data: Dict[str, Any]) -> bool:
         """Detect if scraped data is from a sign-up page"""
@@ -604,32 +597,9 @@ class LinkedInScraperMain:
         return False
     
     def _save_results_to_file(self, results: Dict[str, Any], filename: str) -> None:
-        """Save results to JSON file and MongoDB"""
+        """Save results to JSON file"""
         
-        # Save to MongoDB if enabled
-        mongodb_stats = None
-        unified_stats = None
-        if self.use_mongodb and results.get("scraped_data"):
-            try:
-                # Save to original LinkedIn collection
-                mongodb_stats = self.mongodb_manager.insert_batch_leads(results["scraped_data"], 'linkedin')
-                print(f"\n💾 Results saved to MongoDB (linkedin_leads):")
-                print(f"   - Successfully inserted: {mongodb_stats['success_count']}")
-                print(f"   - Duplicates skipped: {mongodb_stats['duplicate_count']}")
-                print(f"   - Failed insertions: {mongodb_stats['failure_count']}")
-                
-                # Also save to unified collection
-                unified_stats = self.mongodb_manager.insert_and_transform_to_unified(results["scraped_data"], 'linkedin')
-                print(f"\n💾 Results also saved to unified_leads collection:")
-                print(f"   - Successfully transformed & inserted: {unified_stats['success_count']}")
-                print(f"   - Duplicates skipped: {unified_stats['duplicate_count']}")
-                print(f"   - Failed transformations: {unified_stats['failure_count']}")
-                
-            except Exception as e:
-                print(f"❌ Error saving to MongoDB: {e}")
-        elif self.use_mongodb and not clean_scraped_data:
-            print("\n⚠️ No clean data to save to MongoDB (all data was sign-up pages)")
-        # Save to file as backup
+        # Save to file as backup (MongoDB saving is handled by the calling script, e.g., contact_scraper.py)
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(results, f, indent=2, ensure_ascii=False, default=str)
@@ -639,12 +609,6 @@ class LinkedInScraperMain:
         
         except Exception as e:
             print(f"❌ Error saving results to {filename}: {e}")
-        
-        # Add MongoDB stats to results
-        if mongodb_stats:
-            results['mongodb_stats'] = mongodb_stats
-        if unified_stats:
-            results['unified_stats'] = unified_stats
     
     def _print_summary(self, results: Dict[str, Any]) -> None:
         """Print scraping summary"""

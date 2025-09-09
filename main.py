@@ -31,9 +31,10 @@ from web_scraper.main_app import WebScraperOrchestrator
 from instagram_scraper.main import InstagramScraper
 from linkedin_scraper.main import LinkedInScraperMain
 from yt_scraper.main import YouTubeScraperInterface
+from facebook_scraper.facebook_data_extractor import FacebookDataExtractor # Import Facebook scraper
 from database.mongodb_manager import get_mongodb_manager
 from filter_web_lead import MongoDBLeadProcessor
-from contact_scraper import scrape_from_url, get_social_media_contacts
+from contact_scraper import scrape_from_url, get_social_media_contacts, run_contact_scraper_and_get_data, DateTimeEncoder
 
 # Import Gemini AI (assuming it's available)
 try:
@@ -60,7 +61,8 @@ class LeadGenerationOrchestrator:
             'web_scraper': True,
             'instagram': True,
             'linkedin': True,
-            'youtube': True
+            'youtube': True,
+            'facebook': True # Add Facebook scraper
         }
         
         # Initialize MongoDB
@@ -212,8 +214,9 @@ class LeadGenerationOrchestrator:
         # Platform keywords mapping
         platform_keywords = {
             'instagram': 'instagram',
-            'linkedin': 'linkedin', 
-            'youtube': 'youtube'
+            'linkedin': 'linkedin',
+            'youtube': 'youtube',
+            'facebook': 'facebook' # Add Facebook
         }
         
         # Add platform-specific queries
@@ -364,11 +367,12 @@ class LeadGenerationOrchestrator:
                 'instagram': [],
                 'linkedin': [],
                 'youtube': [],
+                'facebook': [], # Add Facebook
                 'general': []
             }
             
             # Get URLs for each type directly from database
-            for url_type in ['instagram', 'linkedin', 'youtube', 'general']:
+            for url_type in ['instagram', 'linkedin', 'youtube', 'facebook', 'general']: # Add Facebook
                 try:
                     urls_data = get_urls_by_type(url_type)
                     # Extract just the URLs from the database documents
@@ -392,17 +396,19 @@ class LeadGenerationOrchestrator:
                 'instagram': [],
                 'linkedin': [],
                 'youtube': [],
+                'facebook': [], # Add Facebook
                 'general': []
             }
     
     def _classify_urls(self, urls_data: List[Dict[str, Any]]) -> Dict[str, List[str]]:
         """
-        Classify URLs by type (instagram, linkedin, youtube, general)
+        Classify URLs by type (instagram, linkedin, youtube, facebook, general)
         """
         classified = {
             'instagram': [],
             'linkedin': [],
             'youtube': [],
+            'facebook': [], # Add Facebook
             'general': []
         }
         
@@ -416,6 +422,8 @@ class LeadGenerationOrchestrator:
                 classified['linkedin'].append(url)
             elif 'youtube.com' in domain or 'youtu.be' in domain:
                 classified['youtube'].append(url)
+            elif 'facebook.com' in domain: # Add Facebook classification
+                classified['facebook'].append(url)
             else:
                 classified['general'].append(url)
         
@@ -497,6 +505,26 @@ class LeadGenerationOrchestrator:
                 logger.error(f"❌ LinkedIn scraper failed: {e}")
                 results['linkedin'] = {'error': str(e)}
         
+        # Run Facebook scraper
+        if 'facebook' in selected_scrapers and classified_urls.get('facebook'):
+            logger.info("📘 Running Facebook scraper...")
+            try:
+                facebook_extractor = FacebookDataExtractor()
+                facebook_results_list = []
+                for url in classified_urls['facebook'][:5]: # Limit to 5 URLs
+                    extracted_data = await facebook_extractor.extract_facebook_data(url)
+                    if extracted_data.get('error'):
+                        logger.warning(f"⚠️ Failed to extract Facebook data from {url}: {extracted_data['error']}")
+                    else:
+                        facebook_results_list.append(extracted_data)
+                        # The FacebookDataExtractor already handles saving to MongoDB internally
+                        # No need to explicitly call insert_facebook_lead or insert_and_transform_to_unified here
+                results['facebook'] = {'data': facebook_results_list, 'success_count': len(facebook_results_list)}
+                logger.info(f"✅ Facebook scraper completed: {len(facebook_results_list)} entries")
+            except Exception as e:
+                logger.error(f"❌ Facebook scraper failed: {e}")
+                results['facebook'] = {'error': str(e)}
+
         # Run YouTube scraper
         if 'youtube' in selected_scrapers and classified_urls.get('youtube'):
             logger.info("🎥 Running YouTube scraper...")
@@ -699,6 +727,11 @@ class LeadGenerationOrchestrator:
                     report_data["results_summary"][scraper] = {
                         "status": "success" if result.get('success') else "failed"
                     }
+                elif scraper == 'facebook': # Add Facebook scraper reporting
+                    report_data["results_summary"][scraper] = {
+                        "status": "success",
+                        "entries_found": result.get('success_count', 0)
+                    }
         
         # Save report
         report_filename = f"orchestration_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -808,6 +841,23 @@ class LeadGenerationOrchestrator:
             logger.info("📊 Step 9: Generating final report...")
             report_file = self.generate_final_report(icp_data, selected_scrapers, results)
             
+            # Step 10: Run contact_scraper.py's main logic to generate a consolidated JSON output
+            logger.info("📄 Step 10: Generating consolidated contact data JSON...")
+            try:
+                # Call the refactored function from contact_scraper.py
+                # This will run the scraper and return all processed data
+                processed_contact_data = await run_contact_scraper_and_get_data(name="all") # Using a dummy name to trigger all scrapers
+                
+                if processed_contact_data:
+                    output_filename = f"consolidated_contact_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    with open(output_filename, 'w', encoding='utf-8') as f:
+                        json.dump(processed_contact_data, f, indent=4, cls=DateTimeEncoder)
+                    logger.info(f"✅ Consolidated contact data saved to {output_filename}")
+                else:
+                    logger.info("ℹ️ No consolidated contact data to save.")
+            except Exception as e:
+                logger.error(f"❌ Error generating consolidated contact data JSON: {e}")
+
             # Final summary
             print(f"\n" + "=" * 80)
             print("🎉 ORCHESTRATION COMPLETED")

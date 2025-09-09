@@ -6,6 +6,9 @@ Provides utility functions to manage and query the MongoDB database
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from database.mongodb_manager import get_mongodb_manager
 
 
@@ -220,9 +223,9 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Database Utilities for Lead Generation")
-    parser.add_argument("--action", choices=['stats', 'search', 'export', 'recent', 'duplicates', 'cleanup'], 
+    parser.add_argument("--action", choices=['stats', 'search', 'export', 'recent', 'duplicates', 'cleanup'],
                        required=True, help="Action to perform")
-    parser.add_argument("--source", choices=['instagram', 'linkedin', 'web', 'youtube'], 
+    parser.add_argument("--source", choices=['instagram', 'linkedin', 'web', 'youtube', 'facebook', 'twitter', 'unified'],
                        help="Specific source to query")
     parser.add_argument("--query", help="Search query")
     parser.add_argument("--limit", type=int, default=100, help="Maximum results")
@@ -243,12 +246,17 @@ def main():
             print(json.dumps(stats, indent=2, default=str))
             
         elif args.action == 'search':
-            results = db_utils.search_leads(
-                query=args.query,
-                source=args.source,
-                limit=args.limit,
-                date_from=args.date_from,
-                date_to=args.date_to
+            parsed_query = {}
+            if args.query:
+                try:
+                    parsed_query = json.loads(args.query)
+                except json.JSONDecodeError:
+                    print(f"Error: Invalid JSON query string: {args.query}")
+                    return
+
+            results = db_utils.mongodb_manager.search_unified_leads(
+                query=parsed_query,
+                limit=args.limit
             )
             print(f"Found {len(results)} results")
             print(json.dumps(results, indent=2, default=str))

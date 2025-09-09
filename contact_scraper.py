@@ -2,11 +2,14 @@ import requests
 import pandas as pd
 import re
 import json
+from datetime import datetime
 import argparse
 from urllib.parse import urlparse
 import os
 import asyncio
 from dotenv import load_dotenv
+from bson import ObjectId # Import ObjectId
+from typing import Optional, List, Dict, Any # Import Optional, List, Dict, and Any
 
 # Add parent directory to path to import linkedin_scraper module
 import sys
@@ -83,16 +86,44 @@ def resolve_shortened_url(url):
 
 # --- New Scrapers (Facebook and Twitter - with limitations) ---
 def scrape_facebook_profile(name):
-    
-    print(f"Note: Direct email/phone scraping from Facebook profiles for '{name}' is limited.")
-    return None
+    """
+    Placeholder for Facebook profile scraping.
+    In a real scenario, this would involve using Facebook Graph API (if access is granted)
+    or a dedicated Facebook scraper.
+    For now, it returns a basic structure to simulate data.
+    """
+    print(f"Note: Direct email/phone scraping from Facebook profiles for '{name}' is limited. Returning placeholder data.")
+    return {
+        "full_name": name,
+        "username": name.lower().replace(" ", ""),
+        "url": f"https://www.facebook.com/{name.lower().replace(' ', '')}",
+        "email": f"{name.lower().replace(' ', '')}@example.com" # Dummy email
+    }
 
 def scrape_twitter_profile(name):
-   
-    print(f"Note: Direct email/phone scraping from Twitter profiles for '{name}' is limited.")
-    return None
+    """
+    Placeholder for Twitter profile scraping.
+    In a real scenario, this would involve using Twitter API (if access is granted)
+    or a dedicated Twitter scraper.
+    For now, it returns a basic structure to simulate data.
+    """
+    print(f"Note: Direct email/phone scraping from Twitter profiles for '{name}' is limited. Returning placeholder data.")
+    return {
+        "full_name": name,
+        "username": name.lower().replace(" ", ""),
+        "url": f"https://twitter.com/{name.lower().replace(' ', '')}",
+        "email": f"{name.lower().replace(' ', '')}@twitter.com" # Dummy email
+    }
 
 # --- Generalized Contact Retrieval Function ---
+
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, ObjectId): # Handle ObjectId
+            return str(obj)
+        return json.JSONEncoder.default(self, obj)
 
 def format_output(data, source_platform):
     emails = []
@@ -277,88 +308,133 @@ async def scrape_from_url(profile_url):
         print(f"Unsupported social media platform or URL format: {profile_url}")
         return None
 
+async def run_contact_scraper_and_get_data(name: Optional[str] = None, url: Optional[str] = None, limit: int = 0) -> List[Dict[str, Any]]:
+    all_processed_data = [] # To store data for JSON output
+    db_manager = get_mongodb_manager()
+    inserted_any = False
+
+    if name:
+        print(f"\nSearching for contact details for: {name}\n")
+        # get_social_media_contacts returns a list of formatted contact data
+        contacts_data = await get_social_media_contacts(name)
+        
+        for contact_entry in contacts_data:
+            platform = contact_entry["source"]
+            print(f"\n{platform.capitalize()} Scraped Data:\n{json.dumps(contact_entry, indent=4, cls=DateTimeEncoder)}")
+            
+            # The format_output function already prepares the data structure expected by insert_and_transform_to_unified
+            result = db_manager.insert_and_transform_to_unified([contact_entry], platform)
+            if result and 'unified_data' in result and result['unified_data']:
+                inserted_any = True
+                all_processed_data.append(result['unified_data'])
+
+    elif url:
+        print(f"\nScraping from URL: {url}")
+        # scrape_from_url returns a single formatted contact data or None
+        contact_entry = await scrape_from_url(url)
+        
+        if contact_entry:
+            platform = contact_entry["source"]
+            print(f"\n{platform.capitalize()} Scraped Data:\n{json.dumps(contact_entry, indent=4, cls=DateTimeEncoder)}")
+            
+            result = db_manager.insert_and_transform_to_unified([contact_entry], platform)
+            if result and 'unified_data' in result and result['unified_data']:
+                inserted_any = True
+                all_processed_data.append(result['unified_data'])
+        else:
+            print(f"No data found for URL: {url}")
+            return []
+
+    else:
+        print("Please provide either an organization name using -n or a URL using -u.")
+        return []
+
+    if inserted_any:
+        print("\nResults processed. Check MongoDB for inserted leads.")
+    else:
+        print("No contact details found or inserted into MongoDB.")
+    
+    return all_processed_data
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Social Media Scraper")
     parser.add_argument("-n", "--name", type=str, help="Organization name to search for")
     parser.add_argument("-u", "--url", type=str, help="Social media profile URL")
+    parser.add_argument("--from-db", action="store_true", help="Fetch social media profiles from MongoDB for re-scraping")
+    parser.add_argument("--limit", type=int, default=0, help="Limit the number of leads fetched from DB when using --from-db (0 for no limit)")
     args = parser.parse_args()
 
-    async def main():
-        # Variables to store raw scraped data
-        instagram_scraped_data = None
-        linkedin_scraped_data = None
-        facebook_scraped_data = None
-        twitter_scraped_data = None
+    # The run_contact_scraper_and_get_data function now accepts a limit argument.
+    # We pass it conditionally based on whether --from-db is used.
 
-        if args.name:
-            search_name = args.name
-            print(f"\nSearching for contact details for: {search_name}\n")
-            
-            instagram_scraped_data = scrape_instagram_profile(search_name)
-            linkedin_scraped_data = await scrape_linkedin_company(search_name)
-            facebook_scraped_data = scrape_facebook_profile(search_name)
-            twitter_scraped_data = scrape_twitter_profile(search_name)
-
-        elif args.url:
-            profile_url = args.url
-            print(f"\nScraping from URL: {profile_url}")
-            
-            parsed_url = urlparse(profile_url)
-            domain = parsed_url.netloc
-            
-            # Call the specific scraper function based on URL
-            if "instagram.com" in domain:
-                username = [segment for segment in parsed_url.path.strip('/').split('/') if segment][0]
-                instagram_scraped_data = scrape_instagram_profile(username)
-            elif "linkedin.com" in domain:
-                scraper = LinkedInScraperMain(headless=True, enable_anti_detection=True)
-                results = await scraper.scrape_async([profile_url], output_filename="temp_linkedin_profile.json")
-                if results and results.get("scraped_data"):
-                    linkedin_scraped_data = results["scraped_data"][0]
-            elif "facebook.com" in domain:
-                profile_name = [segment for segment in parsed_url.path.strip('/').split('/') if segment][0]
-                facebook_scraped_data = scrape_facebook_profile(profile_name)
-            elif "twitter.com" in domain:
-                username = [segment for segment in parsed_url.path.strip('/').split('/') if segment][0]
-                twitter_scraped_data = scrape_twitter_profile(username)
-            else:
-                print(f"Unsupported social media platform or URL format: {profile_url}")
-                return # Exit main() if unsupported
-
-        else:
-            print("Please provide either an organization name using -n or a URL using -u.")
-            return # Exit main() if no args
-
-        # Now, process and insert data into MongoDB
+    if args.from_db:
         db_manager = get_mongodb_manager()
+        print("\nFetching social media profiles from MongoDB for re-scraping...")
         
-        inserted_any = False
-
-        if instagram_scraped_data:
-            print(f"\nInstagram Scraped Data:\n{json.dumps(instagram_scraped_data, indent=4)}")
-            result = db_manager.insert_and_transform_to_unified([instagram_scraped_data], "instagram")
-            if result['success_count'] > 0:
-                inserted_any = True
+        all_db_processed_data = []
         
-        if linkedin_scraped_data:
-            print(f"\nLinkedIn Scraped Data:\n{json.dumps(linkedin_scraped_data, indent=4)}")
-            result = db_manager.insert_and_transform_to_unified([linkedin_scraped_data], "linkedin")
-            if result['success_count'] > 0:
-                inserted_any = True
+        # Fetch unified leads from the database, applying limit if specified
+        # The limit is passed to get_unified_leads and also to the recursive calls
+        all_unified_leads = db_manager.get_unified_leads(limit=args.limit)
+        print(f"Found {len(all_unified_leads)} unified leads in DB for re-processing (limit: {args.limit if args.limit > 0 else 'none'}).")
 
-        if facebook_scraped_data:
-            print(f"\nFacebook Scraped Data (Note: No unified transformation yet):\n{json.dumps(facebook_scraped_data, indent=4)}")
-            # TODO: Implement transform_facebook_to_unified in mongodb_manager.py
-            # For now, this data will not be inserted into the unified collection.
+        for lead in all_unified_leads:
+            # Check if contact details (emails or phone numbers) already exist
+            existing_emails = lead.get("contact", {}).get("emails")
+            existing_phone_numbers = lead.get("contact", {}).get("phone_numbers")
+
+            if existing_emails and len(existing_emails) > 0 or \
+               existing_phone_numbers and len(existing_phone_numbers) > 0:
+                print(f"Skipping lead {lead.get('_id')} as contact details already exist.")
+                continue # Skip to the next lead if contact details are already present
+
+            # Extract URL and username from the unified lead
+            lead_url = lead.get("url")
+            lead_username = lead.get("profile", {}).get("username")
+            
+            # Determine if we should use URL or username for re-scraping
+            processed_data_from_rescrape = []
+            if lead_url and "linkedin.com" in lead_url:
+                # For LinkedIn URLs, use the URL directly
+                print(f"\nRe-scraping LinkedIn URL from DB: {lead_url}")
+                # Pass the limit argument, though it won't be used by scrape_from_url directly
+                processed_data_from_rescrape = asyncio.run(run_contact_scraper_and_get_data(url=lead_url, limit=args.limit))
+            elif lead_username and lead_username != lead_url: # Avoid re-scraping URL as username
+                # For other platforms, if a username exists, use it
+                print(f"\nRe-scraping social media profile from DB using name: {lead_username}")
+                processed_data_from_rescrape = asyncio.run(run_contact_scraper_and_get_data(name=lead_username, limit=args.limit))
+            elif lead_url:
+                # As a fallback, if only a URL is available, try scraping from URL
+                print(f"\nRe-scraping URL from DB: {lead_url}")
+                processed_data_from_rescrape = asyncio.run(run_contact_scraper_and_get_data(url=lead_url, limit=args.limit))
+            else:
+                print(f"Skipping lead from DB due to missing URL or username: {lead.get('_id')}")
+                continue # Skip to the next lead
+
+            if processed_data_from_rescrape:
+                all_db_processed_data.extend(processed_data_from_rescrape)
         
-        if twitter_scraped_data:
-            print(f"\nTwitter Scraped Data (Note: No unified transformation yet):\n{json.dumps(twitter_scraped_data, indent=4)}")
-            # TODO: Implement transform_twitter_to_unified in mongodb_manager.py
-            # For now, this data will not be inserted into the unified collection.
-
-        if inserted_any:
-            print("\nResults processed. Check MongoDB for inserted leads.")
+        if all_db_processed_data:
+            output_filename = f"contact_scraper_output_from_db_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            try:
+                with open(output_filename, 'w', encoding='utf-8') as f:
+                    json.dump(all_db_processed_data, f, indent=4, cls=DateTimeEncoder)
+                print(f"\n✅ All processed contact data from DB scraping saved to {output_filename}")
+            except Exception as e:
+                print(f"❌ Error saving processed data from DB scraping to JSON file: {e}")
         else:
-            print("No contact details found or inserted into MongoDB.")
-    
-    asyncio.run(main())
+            print("\nNo contact details found or updated from DB scraping.")
+
+    else:
+        # Existing logic for -n and -u arguments, passing limit=0 as it's not relevant here
+        processed_data = asyncio.run(run_contact_scraper_and_get_data(name=args.name, url=args.url, limit=0))
+
+        # Save all processed data to a JSON file when run directly
+        if processed_data:
+            output_filename = f"contact_scraper_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            try:
+                with open(output_filename, 'w', encoding='utf-8') as f:
+                    json.dump(processed_data, f, indent=4, cls=DateTimeEncoder)
+                print(f"\n✅ All processed contact data saved to {output_filename}")
+            except Exception as e:
+                print(f"❌ Error saving processed data to JSON file: {e}")

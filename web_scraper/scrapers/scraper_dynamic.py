@@ -21,7 +21,7 @@ async def _ensure_playwright():
 		) from e
 
 
-async def _create_context(pw):
+async def _create_context(pw, proxy: Optional[Dict[str, str]] = None):
 	try:
 		# Optional anti-detection integration
 		adm = AntiDetectionManager(
@@ -29,11 +29,11 @@ async def _create_context(pw):
 			enable_behavioral_mimicking=True,
 			enable_network_obfuscation=True,
 		)
-		browser, context = await create_stealth_browser_context(pw, adm, is_mobile=False)
+		browser, context = await create_stealth_browser_context(pw, adm, is_mobile=False, proxy=proxy)
 		return browser, context, adm
 	except Exception as e:
 		logger.warning(f"Anti-detection context failed, falling back: {e}")
-		browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])  # type: ignore
+		browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"], proxy=proxy)  # type: ignore
 		context = await browser.new_context()
 		return browser, context, None
 
@@ -131,11 +131,11 @@ async def _dismiss_popups(page, adm: Optional[AntiDetectionManager] = None):
 		pass
 
 
-async def fetch_dynamic_async(url: str, wait_for_selector: Optional[str] = None, timeout_ms: int = 30000) -> PageContent:
+async def fetch_dynamic_async(url: str, wait_for_selector: Optional[str] = None, timeout_ms: int = 30000, proxy: Optional[Dict[str, str]] = None) -> PageContent:
 	async_playwright = await _ensure_playwright()
 	start = time.time()
 	async with async_playwright() as pw:
-		browser, context, adm = await _create_context(pw)
+		browser, context, adm = await _create_context(pw, proxy)
 		page = await context.new_page()
 		logger.info(f"Fetching URL (dynamic): {url}")
 		# Network obfuscation: delay before navigating and increment counters
@@ -151,7 +151,7 @@ async def fetch_dynamic_async(url: str, wait_for_selector: Optional[str] = None,
 					try:
 						await context.close()
 						await browser.close()
-						browser, context, adm = await _create_context(pw)
+						browser, context, adm = await _create_context(pw, proxy)
 						page = await context.new_page()
 					except Exception:
 						pass

@@ -48,7 +48,8 @@ class WebScraperOrchestrator:
                  enable_quality_engine: bool = True,
                  max_workers: int = 5,
                  delay_between_requests: float = 1.0,
-                 use_mongodb: bool = True):
+                 use_mongodb: bool = True,
+                 proxy: Optional[Dict[str, str]] = None):
         """
         Initialize the orchestrator
         
@@ -59,6 +60,7 @@ class WebScraperOrchestrator:
             max_workers: Maximum concurrent workers for processing
             delay_between_requests: Delay between requests to avoid rate limiting
             use_mongodb: Whether to save data to MongoDB (default: True)
+            proxy: Optional dictionary for proxy settings (e.g., {'server': 'http://proxyserver:port'})
         """
         self.storage = LeadStorage(storage_path)
         self.export_manager = ExportManager(self.storage)
@@ -69,6 +71,7 @@ class WebScraperOrchestrator:
         self.max_workers = max_workers
         self.delay_between_requests = delay_between_requests
         self.use_mongodb = use_mongodb
+        self.proxy = proxy
         
         # Track processed URLs to avoid duplicates
         self.processed_urls: Set[str] = set()
@@ -151,8 +154,8 @@ class WebScraperOrchestrator:
                         return None
             else:
                 try:
-                    # Use dynamic scraping for dynamic pages
-                    page_content = fetch_dynamic(url)
+                    # Use dynamic scraping for dynamic pages, passing proxy if available
+                    page_content = fetch_dynamic(url, proxy=self.proxy)
                     logger.info(f"Dynamic fetch successful for {url}")
                 except Exception as e:
                     logger.error(f"Dynamic fetch failed for {url}: {e}")
@@ -903,7 +906,8 @@ def main():
         enable_ai=not args.disable_ai,
         enable_quality_engine=not args.disable_quality,
         max_workers=args.max_workers,
-        delay_between_requests=args.delay
+        delay_between_requests=args.delay,
+        proxy=None # Proxy argument will be added later via CLI or config
     )
     
     try:

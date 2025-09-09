@@ -531,42 +531,49 @@ class AntiDetectionManager:
         }
 
 
-async def create_stealth_browser_context(playwright, anti_detection_manager: AntiDetectionManager, is_mobile: bool = False):
-    """Create a stealth browser context with anti-detection measures"""
+from playwright.async_api import Browser # Add Browser import
+
+# ...
+
+async def create_stealth_browser_context(playwright, anti_detection_manager: AntiDetectionManager, is_mobile: bool = False, browser_instance: Optional[Browser] = None):
+    """Create a stealth browser context with anti-detection measures, optionally reusing an existing browser instance."""
     context_options = await anti_detection_manager.generate_stealth_context_options(is_mobile=is_mobile)
     
-    browser = await playwright.chromium.launch(
-        headless=context_options.get('headless', True),
-        args=[
-            '--no-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            '--disable-web-security',
-            '--disable-features=VizDisplayCompositor',
-            '--disable-extensions',
-            '--disable-plugins',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--disable-field-trial-config',
-            '--disable-ipc-flooding-protection',
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--disable-default-apps',
-            '--disable-sync',
-            '--disable-translate',
-            '--hide-scrollbars',
-            '--mute-audio',
-            '--no-zygote',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-background-networking',
-            '--disable-client-side-phishing-detection',
-            '--disable-component-extensions-with-background-pages',
-            '--disable-domain-reliability',
-            '--disable-features=TranslateUI'
-        ]
-    )
+    if browser_instance:
+        browser = browser_instance
+    else:
+        browser = await playwright.chromium.launch(
+            headless=context_options.get('headless', True),
+            args=[
+                '--no-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-field-trial-config',
+                '--disable-ipc-flooding-protection',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate',
+                '--hide-scrollbars',
+                '--mute-audio',
+                '--no-zygote',
+                '--disable-gpu',
+                '--disable-software-rasterizer',
+                '--disable-background-networking',
+                '--disable-client-side-phishing-detection',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-domain-reliability',
+                '--disable-features=TranslateUI'
+            ]
+        )
     
     context = await browser.new_context(**context_options)
     
