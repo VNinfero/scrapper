@@ -12,27 +12,61 @@ from bs4 import BeautifulSoup
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from web_scraper.scrapers.scraper_dynamic import fetch_dynamic_async # Import the async function
+from playwright.async_api import Page
+from web_scraper.utils.anti_detection import AntiDetectionManager # Import AntiDetectionManager
 from database.mongodb_manager import get_mongodb_manager # Import the MongoDB manager
 
 class FacebookDataExtractor:
     """Facebook data extractor"""
     
-    def __init__(self, proxy: Optional[Dict[str, str]] = None):
-        # Parameters like headless, enable_anti_detection, is_mobile are handled internally by fetch_dynamic_async
+    def __init__(self):
         self.mongodb_manager = get_mongodb_manager()
-        self.proxy = proxy
 
-    async def extract_facebook_data(self, url: str) -> Dict[str, Any]:
-        """Extract Facebook data from a specific URL"""
+    async def extract_facebook_data(self, page: Page, url: str, adm: Optional[AntiDetectionManager] = None) -> Dict[str, Any]:
+        """Extract Facebook data from a specific URL using an existing Playwright page"""
         print(f"Extracting Facebook data from: {url}")
         
         try:
-            # Use fetch_dynamic_async directly; it manages headless and anti-detection internally
-            page_content = await fetch_dynamic_async(url, proxy=self.proxy)
+            # Navigate to the URL
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             
-            html_content = page_content.html
-            rendered_text = page_content.text
+            # Progressive waits
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            
+            # Dismiss popups
+            try:
+                await self._dismiss_popups(page, adm)
+            except Exception:
+                pass
+
+            # Basic scroll to trigger lazy content
+            try:
+                h = await page.evaluate("() => document.body.scrollHeight")
+                if adm:
+                    await adm.execute_human_behavior(page, behavior_type='scroll', position=int(h))
+                else:
+                    # Fallback if ADM is not available
+                    await page.evaluate(f"window.scrollTo(0, {int(h)})")
+                
+                # Light mouse move near the center to simulate activity
+                viewport = await page.viewport_size()
+                if viewport:
+                    if adm:
+                        await adm.execute_human_behavior(page, behavior_type='mousemove', position=(int(viewport['width'] * 0.6), int(viewport['height'] * 0.6)))
+            except Exception:
+                pass
+            
+            # Dismiss popups again after interactions
+            try:
+                await self._dismiss_popups(page, adm)
+            except Exception:
+                pass
+
+            html_content = await page.content()
+            rendered_text = await page.evaluate("document.body.innerText")
             
             extracted_data = {
                 'url': url,
@@ -53,16 +87,24 @@ class FacebookDataExtractor:
             print(f"DEBUG: Extracted meta_data: {json.dumps(meta_data, indent=2)}")
             
             # Detect URL type after meta_data is available
-            url_type = self._detect_url_type(url, meta_data)
+            url_type = await self._detect_url_type(url, html_content, meta_data, page)
             extracted_data['url_type'] = url_type # Update url_type in extracted_data
             
             combined_data = await self._combine_data_sources(json_ld_data, meta_data, url_type)
             extracted_data['extracted_data'] = combined_data
+
+            # Extract contact info and category
+            contact_info = self._extract_contact_info(html_content) # Use html_content for better email/phone extraction
+            extracted_data['extracted_data']['emails'] = list(contact_info['emails'])
+            extracted_data['extracted_data']['phone_numbers'] = list(contact_info['phone_numbers'])
             
+            if url_type == 'page':
+                page_category = await self._extract_page_category(page)
+                if page_category:
+                    extracted_data['extracted_data']['category'] = page_category
+
             page_analysis = await self._analyze_page_content(rendered_text, html_content, url_type)
             extracted_data['page_analysis'] = page_analysis
-            
-            # network_analysis is not directly available from fetch_dynamic_async, so it's an empty dict
             
             return extracted_data
             
@@ -74,38 +116,118 @@ class FacebookDataExtractor:
                 'success': False
             }
 
-    def _detect_url_type(self, url: str, meta_data: Dict[str, Any]) -> str:
-        """Detect the type of Facebook URL (profile, page, post, etc.) using URL patterns and Open Graph meta tags"""
+    async def _detect_url_type(self, url: str, html_content: str, meta_data: Dict[str, Any], page: Page) -> str:
+        """Detect the type of Facebook URL (profile, page, post, etc.) using URL patterns, Open Graph meta tags, and page content."""
         og_type = meta_data.get('open_graph', {}).get('og:type', '').lower()
-
-        # 1. Post URLs (most specific URL patterns)
-        if re.search(r'facebook\.com/story\.php\?story_fbid=\d+&id=\d+', url) or \
-           re.search(r'facebook\.com/[^/]+/posts/\d+', url):
-            return 'post'
         
-        # 2. Profile URLs (specific URL patterns or og:type "profile")
-        if re.search(r'facebook\.com/profile\.php\?id=\d+', url) or \
-           og_type == 'profile':
+        # 1. Prioritize "restricted" if login/signup content is dominant
+        login_indicators = [
+            "log in to facebook", "sign up for facebook", "facebook helps you connect and share",
+            "you must log in to continue", "the page may have been removed"
+        ]
+        
+        for indicator in login_indicators:
+            if indicator in html_content.lower():
+                # Check if it's primarily a login page by looking for form elements
+                if await page.locator('form[action*="login.php"]').is_visible():
+                    return 'restricted'
+        
+        # 2. Specific URL patterns
+        if re.search(r'facebook\.com/profile\.php\?id=\d+', url):
             return 'profile'
-        
-        # 3. Page URLs (specific URL patterns)
-        # Look for /pages/, /pg/, or /about sub-paths, or if og_type is clearly a page type
-        if re.search(r'facebook\.com/(?:pages|pg)/[^/]+', url) or \
-           re.search(r'facebook\.com/[^/]+/about/?', url) or \
-           og_type in ['website', 'article', 'business.business', 'books.book', 'music.song', 'video.movie', 'video.tv_show', 'video.episode']:
+        if re.search(r'facebook\.com/groups/[^/]+', url):
+            return 'group'
+        if re.search(r'facebook\.com/events/[^/]+', url):
+            return 'event'
+        if re.search(r'facebook\.com/[^/]+/posts/\d+', url) or re.search(r'facebook\.com/story\.php\?story_fbid=\d+&id=\d+', url):
+            return 'post'
+        if re.search(r'facebook\.com/(?:pages|pg)/[^/]+', url) or re.search(r'facebook\.com/[^/]+/about/?', url):
             return 'page'
         
-        # 4. Generic username URLs (e.g., facebook.com/facebook)
-        # If it's a simple facebook.com/username and not caught by above,
-        # try to infer based on common page titles or if it's not a known profile-like pattern.
+        # 3. Open Graph meta tags (less reliable for type, but good for general content)
+        if og_type == 'profile':
+            return 'profile'
+        if og_type in ['website', 'article', 'business.business', 'books.book', 'music.song', 'video.movie', 'video.tv_show', 'video.episode']:
+            return 'page' # Pages often use these generic OG types
+        if og_type == 'community':
+            return 'group'
+        if og_type == 'event':
+            return 'event'
+        if og_type in ['article', 'video.other', 'music.song']: # Posts can be video.other
+            return 'post'
+
+        # 4. Element-based detection (for publicly accessible pages only)
+        # These are less reliable if the page content is dynamic or behind a login wall
+        try:
+            if await page.locator('//span[text()="Add Friend" or text()="Follow"]').is_visible():
+                return 'profile'
+            if await page.locator('//span[text()="Like Page" or text()="Send Message"]').is_visible():
+                return 'page'
+            if await page.locator('//span[text()="Join Group" or text()="Joined"]').is_visible():
+                return 'group'
+            if await page.locator('//span[text()="Interested" or text()="Going"]').is_visible():
+                return 'event'
+        except Exception:
+            pass # Ignore errors if elements are not found or page is restricted
+
+        # 5. Generic username URLs (e.g., facebook.com/facebook) - assume page if not restricted
         if re.search(r'facebook\.com/[a-zA-Z0-9_.]+$', url):
-            # Exclude known profile-like sub-paths and system paths
+            # Exclude known system paths
             if not re.search(r'facebook\.com/(?:friends|messages|bookmarks|saved|notifications|settings|help|privacy|terms|login|recover|marketplace|games|gaming|watch|live|stories|search|groups|events|findfriends|developers|business|creators|community|gamingvideo|jobs|weather|coronavirus|news|shops|offers|donations)/?$', url):
-                # If og_type is not profile, and it's a generic username, it's likely a page
-                if og_type != 'profile':
-                    return 'page'
+                return 'page' 
 
         return 'unknown'
+
+    def _extract_contact_info(self, html_content: str) -> Dict[str, set]:
+        """Extracts emails and phone numbers from HTML content."""
+        emails = set(re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?', html_content, re.IGNORECASE))
+        
+        # More robust phone number regex for various formats, including international
+        phone_numbers = set(re.findall(
+            r'(?:(?:\+|00)\d{1,3}[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\d{2,4}[-.\s]?\d{2,4}[-.\s]?\d{2,4})', 
+            html_content
+        ))
+        
+        # Remove common false positives for phone numbers (e.g., years, simple numbers)
+        phone_numbers = {p for p in phone_numbers if len(re.sub(r'\D', '', p)) >= 7}
+        
+        return {'emails': emails, 'phone_numbers': phone_numbers}
+
+    async def _extract_page_category(self, page: Page) -> Optional[str]:
+        """Extracts the category for a Facebook Page."""
+        try:
+            # Look for category text near the page title or in the 'About' section
+            # This is highly dependent on Facebook's ever-changing HTML structure.
+            
+            # Attempt 1: Look for specific spans/divs containing category info
+            # Example selectors, these might need adjustment based on real-world observation
+            category_selectors = [
+                '//div[contains(@class, "x1iyjqo2")]//span[contains(@class, "x193iq5w") and @dir="auto"]', # Common text element for category
+                '//a[contains(@href, "/categories/")]/span', # Link to category
+                '//div[contains(@aria-label, "Category")]/span', # Aria label based
+            ]
+            
+            for selector in category_selectors:
+                category_locator = page.locator(selector)
+                if await category_locator.count() > 0 and await category_locator.first.is_visible():
+                    return await category_locator.first.text_content()
+            
+            # Attempt 2: Look for Open Graph type as a fallback for category
+            og_type_meta = await page.locator('meta[property="og:type"]').get_attribute('content')
+            if og_type_meta and og_type_meta not in ['website', 'article', 'video.other']:
+                return og_type_meta.replace('business.', '').replace('books.', '').replace('music.', '') # Clean up
+
+            # Attempt 3: Search for common category keywords in page text (less precise)
+            category_keywords = ["artist", "musician", "brand", "product", "company", "organization", "public figure", "community", "blog", "news", "shopping", "retail", "local business", "nonprofit organization", "government organization", "education", "media", "sports", "entertainment"]
+            
+            for keyword in category_keywords:
+                if await page.locator(f'text="{keyword}"').count() > 0:
+                    return keyword.capitalize()
+            
+            return None # No category found
+        except Exception as e:
+            print(f"Error extracting page category: {e}")
+            return None
 
     async def _extract_json_ld_data(self, html_content: str, url_type: str) -> Dict[str, Any]:
         """Extract JSON-LD data"""
@@ -207,7 +329,7 @@ class FacebookDataExtractor:
                 page_data['members'] = [m.get('name') for m in json_data['member'] if isinstance(m, dict)]
             print(f"✅ Extracted page data from JSON-LD: {page_data.get('name', 'Unknown')}")
         return page_data
-
+    
     async def _parse_post_json_ld(self, json_data: Dict[str, Any]) -> Dict[str, Any]:
         """Parse post JSON-LD data"""
         post_data = {}
@@ -387,147 +509,71 @@ class FacebookDataExtractor:
         except Exception as e:
             print(f"❌ Error saving Facebook data to {filename}: {e}")
 
-async def run_facebook_scraper_interactively():
-    """Run the Facebook scraper interactively, allowing user to input URLs."""
-    print("=" * 80)
-    print("FACEBOOK DATA EXTRACTOR - INTERACTIVE MODE")
-    print("=" * 80)
-
-    example_urls = [
+    async def _dismiss_popups(self, page: Page, adm: Optional[AntiDetectionManager] = None):
+        """Attempt to close common consent/sign-in/newsletter popups with human-like actions."""
+        text_buttons = [
+            "Accept all", "Accept All", "Accept", "I agree", "I Agree", "Allow all", "Allow All",
+            "Got it", "Okay", "OK", "Close", "No thanks", "Not now", "Not Now", "Dismiss",
+            "Only allow essential cookies", "Allow all cookies",
+        ]
+        selectors = [
+            "#onetrust-accept-btn-handler", ".onetrust-close-btn-handler", ".ot-pc-refuse-all-handler",
+            "#cky-consent-accept", ".cky-consent-btn-accept",
+            "button[aria-label='Close']", "button[aria-label='close']", "[data-testid='close']",
+            ".modal-close, .modal__close, .close, .close-button",
+            ".newsletter, .cookie, .cookies, .gdpr, .consent",
+        ]
         
-        "https://www.facebook.com/AirtelIndia/"
-
-    ]
-
-    print("\nSupported URL types:")
-    print("  - Profile: https://www.facebook.com/username")
-    print("  - Page: https://www.facebook.com/pagename")
-    print("  - Post: https://www.facebook.com/username/posts/postid (Note: post scraping is less reliable due to Facebook's public access policies)")
-    
-    choice = ''
-    try:
-        choice = input("\nUse example URLs? (y/n, default: y): ").strip().lower()
-    except EOFError:
-        print("\nNon-interactive environment detected. Using example URLs.")
-        choice = 'y' # Default to 'y' for non-interactive environments
-
-    if choice == 'y' or choice == '':
-        urls_to_scrape = example_urls
-        print("\nUsing example URLs:")
-        for url in example_urls:
-            print(f"  - {url}")
-    else:
-        print("\nEnter Facebook URLs (one per line, press Enter twice when done):")
-        urls_to_scrape = []
-        while True:
+        async def _click_if_visible(locator):
             try:
-                url = input().strip()
-            except EOFError:
-                print("\nNon-interactive environment detected. Stopping URL input.")
-                break
-            if not url:
-                break
-            if 'facebook.com' in url:
-                urls_to_scrape.append(url)
-            else:
-                print("⚠️  Please enter a valid Facebook URL")
-        
-        if not urls_to_scrape:
-            print("No valid URLs provided. Exiting.")
-            return
+                if await locator.is_visible():
+                    if adm:
+                        await asyncio.sleep(0.2) # small human-like pause
+                    await locator.click(timeout=1500)
+                    return True
+            except Exception:
+                return False
+            return False
 
-    # For interactive mode, we don't have a proxy from the main orchestrator,
-    # so we initialize without one or add a prompt for it if desired.
-    # For now, let's assume no proxy for interactive testing.
-    extractor = FacebookDataExtractor(proxy=None)
-
-    try:
-        for i, url in enumerate(urls_to_scrape, 1):
-            print(f"\n{'='*60}")
-            print(f"SCRAPING URL {i}/{len(urls_to_scrape)}: {url}")
-            print(f"{'='*60}")
-            
+        # Try role-based buttons with text
+        for label in text_buttons:
             try:
-                extracted_data = await extractor.extract_facebook_data(url)
-                
-                if extracted_data.get('error'):
-                    print(f"❌ Failed to extract data: {extracted_data['error']}")
-                    continue
-                
-                # Determine a suitable filename
-                url_type = extracted_data.get('url_type', 'unknown')
-                filename_prefix = url_type if url_type != 'unknown' else 'facebook_data'
-                filename = f"facebook_{filename_prefix}_{i}.json" # Append index to ensure unique filenames
-                
-                await extractor.save_facebook_data_to_json(extracted_data, filename)
-                
-                print(f"✓ URL Type: {extracted_data.get('url_type', 'unknown')}")
-                print(f"✓ JSON-LD Found: {extracted_data.get('json_ld_data', {}).get('found', False)}")
-                print(f"✓ Extracted Data:")
-                for key, value in extracted_data.get('extracted_data', {}).items():
-                    if isinstance(value, dict):
-                        print(f"    - {key}:")
-                        for sub_key, sub_value in value.items():
-                            print(f"        - {sub_key}: {sub_value}")
-                    else:
-                        print(f"    - {key}: {value}")
-                
-                # Save raw extracted data to facebook_leads collection
-                print(f"\n💾 Attempting to insert raw Facebook data into facebook_leads collection...")
-                raw_data_insert_success = extractor.mongodb_manager.insert_facebook_lead(extracted_data)
-                if raw_data_insert_success:
-                    print(f"✅ Raw Facebook data inserted into facebook_leads collection.")
-                else:
-                    print(f"❌ Failed to insert raw Facebook data into facebook_leads collection (may already exist).")
+                btn = page.get_by_role("button", name=label)
+                if await _click_if_visible(btn):
+                    return
+            except Exception:
+                pass
 
-                # Insert into unified collection
-                print(f"\n💾 Attempting to insert into unified_leads collection...")
-                
-                # Prepare data for unified transformation.
-                # The extracted_data from Facebook scraper is already somewhat processed.
-                # Need to map it to the expected input for transform_facebook_to_unified.
-                # The transform_facebook_to_unified expects specific keys which might not directly match
-                # the top-level keys in extracted_data.
-                # Let's create a dictionary that mimics the structure expected by the transformer.
-                
-                data_for_unified_transform = {
-                    "url": extracted_data.get('url'),
-                    "username": extracted_data.get('extracted_data', {}).get('og_url', '').split('/')[-1] if extracted_data.get('extracted_data', {}).get('og_url') else None,
-                    "full_name": extracted_data.get('extracted_data', {}).get('og_title'),
-                    "about": extracted_data.get('extracted_data', {}).get('og_description'),
-                    "location": None, # Not directly available from current extraction
-                    "email": extracted_data.get('extracted_data', {}).get('business_email'), # From meta, if available
-                    "phone": extracted_data.get('extracted_data', {}).get('business_phone_number'), # From meta, if available
-                    "address": extracted_data.get('extracted_data', {}).get('address'), # From JSON-LD, if available
-                    "website": extracted_data.get('extracted_data', {}).get('og_url'),
-                    "description": extracted_data.get('extracted_data', {}).get('page_description'),
-                    "scraped_at": extracted_data.get('metadata', {}).get('scraping_timestamp')
-                }
-                
-                # Check if the URL type is profile or page to populate full_name and username more accurately
-                if extracted_data.get('url_type') == 'profile' or extracted_data.get('url_type') == 'page':
-                    if extracted_data.get('extracted_data', {}).get('og_title'):
-                        data_for_unified_transform['full_name'] = extracted_data['extracted_data']['og_title'].replace(' | Facebook', '')
-                    if extracted_data.get('url'):
-                        data_for_unified_transform['username'] = extracted_data['url'].split('/')[-1]
+        # Try text locators for links/divs that act as buttons
+        for label in text_buttons:
+            try:
+                el = page.get_by_text(label, exact=False)
+                if await _click_if_visible(el):
+                    return
+            except Exception:
+                pass
 
-                unified_stats = extractor.mongodb_manager.insert_and_transform_to_unified(
-                    [data_for_unified_transform], 'facebook'
-                )
-                
-                print(f"✅ Unified insertion result: Success: {unified_stats['success_count']}, Updated: {unified_stats['updated_count']}, Failed: {unified_stats['failure_count']}")
-                
-            except Exception as e:
-                print(f"❌ Error processing {url}: {e}")
-                import traceback
-                traceback.print_exc()
-                
-    except Exception as e:
-        print(f"\n❌ Critical error during interactive scraping: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print("\n✓ Facebook data extractor interactive session completed")
+        # Try CSS selectors
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                if await _click_if_visible(loc):
+                    return
+            except Exception:
+                continue
 
-if __name__ == "__main__":
-    asyncio.run(run_facebook_scraper_interactively())
+        # Last resort: press Escape to dismiss dialogs
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+        # Small human-like mouse wiggle which can also reveal close buttons
+        try:
+            vp = await page.viewport_size()
+            if vp:
+                x, y = int(vp['width'] * 0.9), int(vp['height'] * 0.1)
+                await page.mouse.move(x, y)
+                await page.mouse.move(x - 20, y + 10)
+        except Exception:
+            pass

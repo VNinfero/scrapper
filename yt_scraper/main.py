@@ -18,21 +18,24 @@ from yt_scraper.browser_manager import YouTubeBrowserManager # Import YouTubeBro
 from database.mongodb_manager import get_mongodb_manager
 from yt_scraper.yt_analyzer import analyze_youtube_leads # Import the new analysis function
 
-# Configuration constants
-CONCURRENCY_LIMIT = 3  # Number of concurrent workers (3-5)
-BATCH_SIZE = 5         # Number of URLs to process in each batch (5-10)
+# Configuration constants (now default values, can be overridden by CLI args)
+DEFAULT_CONCURRENCY_LIMIT = 3  # Number of concurrent workers (3-5)
+DEFAULT_BATCH_SIZE = 4         # Number of URLs to process in each batch (5-10)
 RETRY_ATTEMPTS = 3     # Number of retry attempts for failed scrapes
 RETRY_BACKOFF_FACTOR = 2 # Exponential backoff factor
 
 class YouTubeScraperInterface:
     """Simple interface for YouTube data extraction"""
     
-    def __init__(self, browser_manager: YouTubeBrowserManager, use_mongodb: bool = True):
+    def __init__(self, browser_manager: YouTubeBrowserManager, use_mongodb: bool = True,
+                 concurrency_limit: int = DEFAULT_CONCURRENCY_LIMIT,
+                 batch_size: int = DEFAULT_BATCH_SIZE):
         """Initialize the scraper interface"""
         self.browser_manager = browser_manager
         self.extractor = AdvancedYouTubeExtractor(browser_manager=self.browser_manager)
         self.use_mongodb = use_mongodb
-        self.semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT) # Global rate limiter
+        self.semaphore = asyncio.Semaphore(concurrency_limit) # Global rate limiter
+        self.batch_size = batch_size
         
         # Initialize MongoDB manager if needed
         if self.use_mongodb:
@@ -120,14 +123,14 @@ class YouTubeScraperInterface:
         Returns:
             bool: Success status
         """
-        print(f"🎯 Scraping {len(urls)} URLs in batches of {BATCH_SIZE} with {CONCURRENCY_LIMIT} concurrent workers...")
+        print(f"🎯 Scraping {len(urls)} URLs in batches of {self.batch_size} with {self.semaphore._value} concurrent workers...")
         
         all_extracted_data = []
         
         # Process URLs in batches
-        for i in range(0, len(urls), BATCH_SIZE):
-            batch_urls = urls[i:i + BATCH_SIZE]
-            print(f"\nProcessing batch {int(i/BATCH_SIZE) + 1}/{(len(urls) + BATCH_SIZE - 1) // BATCH_SIZE} ({len(batch_urls)} URLs)...")
+        for i in range(0, len(urls), self.batch_size):
+            batch_urls = urls[i:i + self.batch_size]
+            print(f"\nProcessing batch {int(i/self.batch_size) + 1}/{(len(urls) + self.batch_size - 1) // self.batch_size} ({len(batch_urls)} URLs)...")
             
             tasks = [self._process_url_with_retries(url) for url in batch_urls]
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -215,6 +218,22 @@ class YouTubeScraperInterface:
             elif choice == '2':
                 urls_input = input("Enter URLs (comma-separated): ").strip()
                 if urls_input:
+                    # Ask for batch size and concurrency limit
+                    batch_size_input = input(f"Enter batch size (default: {self.batch_size}): ").strip()
+                    concurrency_input = input(f"Enter concurrency limit (default: {self.semaphore._value}): ").strip()
+
+                    try:
+                        new_batch_size = int(batch_size_input) if batch_size_input else self.batch_size
+                        new_concurrency_limit = int(concurrency_input) if concurrency_input else self.semaphore._value
+                    except ValueError:
+                        print("❌ Invalid input for batch size or concurrency limit. Using defaults.")
+                        new_batch_size = self.batch_size
+                        new_concurrency_limit = self.semaphore._value
+                    
+                    # Update scraper settings dynamically
+                    self.batch_size = new_batch_size
+                    self.semaphore = asyncio.Semaphore(new_concurrency_limit)
+
                     urls = [url.strip() for url in urls_input.split(',') if url.strip()]
                     output = input("Output file name (press Enter for default): ").strip() or "youtube_batch_data.json"
                     await self.scrape_multiple_urls(urls, output)
@@ -222,6 +241,22 @@ class YouTubeScraperInterface:
             elif choice == '3':
                 file_path = input("Enter file path: ").strip()
                 if file_path:
+                    # Ask for batch size and concurrency limit
+                    batch_size_input = input(f"Enter batch size (default: {self.batch_size}): ").strip()
+                    concurrency_input = input(f"Enter concurrency limit (default: {self.semaphore._value}): ").strip()
+
+                    try:
+                        new_batch_size = int(batch_size_input) if batch_size_input else self.batch_size
+                        new_concurrency_limit = int(concurrency_input) if concurrency_input else self.semaphore._value
+                    except ValueError:
+                        print("❌ Invalid input for batch size or concurrency limit. Using defaults.")
+                        new_batch_size = self.batch_size
+                        new_concurrency_limit = self.semaphore._value
+                    
+                    # Update scraper settings dynamically
+                    self.batch_size = new_batch_size
+                    self.semaphore = asyncio.Semaphore(new_concurrency_limit)
+
                     output = input("Output file name (press Enter for default): ").strip() or "youtube_file_data.json"
                     await self.scrape_from_file(file_path, output)
                 
@@ -329,6 +364,10 @@ Examples:
     parser.add_argument('--no-anti-detection', action='store_true',
                        help='Disable anti-detection features')
     parser.add_argument('--analyze', action='store_true', help='Perform analysis after scraping') # New argument for analysis
+    parser.add_argument('--concurrency', type=int, default=DEFAULT_CONCURRENCY_LIMIT,
+                       help=f'Number of concurrent workers (default: {DEFAULT_CONCURRENCY_LIMIT})')
+    parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
+                       help=f'Number of URLs to process in each batch (default: {DEFAULT_BATCH_SIZE})')
     
     args = parser.parse_args()
     
@@ -340,7 +379,11 @@ Examples:
         browser_manager = YouTubeBrowserManager(headless=headless_mode, enable_anti_detection=anti_detection)
         await browser_manager.start() # Start browser manager once
         
-        scraper = YouTubeScraperInterface(browser_manager=browser_manager)
+        scraper = YouTubeScraperInterface(
+            browser_manager=browser_manager,
+            concurrency_limit=args.concurrency,
+            batch_size=args.batch_size
+        )
         
         try:
             if args.interactive:
@@ -370,6 +413,8 @@ Examples:
             await browser_manager.stop() # Stop browser manager once at the end
     
     # Run the async function
+    import time
+    start_time = time.time()
     try:
         asyncio.run(run_scraper())
     except KeyboardInterrupt:
@@ -377,6 +422,10 @@ Examples:
         sys.exit(1)
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
+    finally:
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"\n⏱️ Total execution time: {elapsed_time:.2f} seconds")
         sys.exit(1)
 
 

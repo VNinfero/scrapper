@@ -190,7 +190,7 @@ class AntiDetectionManager:
             }
         }
     
-    async def generate_stealth_context_options(self, is_mobile: bool = False) -> Dict[str, Any]:
+    async def generate_stealth_context_options(self, is_mobile: bool = False, proxy: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Generate stealth context options for browser with hardware correlation and geographic logic"""
         if not self.enable_fingerprint_evasion:
             return {}
@@ -255,6 +255,9 @@ class AntiDetectionManager:
             'extra_http_headers': self._generate_stealth_headers(is_mobile)
         }
         
+        if proxy:
+            context_options['proxy'] = proxy
+
         # Store hardware correlation data for stealth report (not passed to Playwright)
         self.current_hardware_data = {
             'hardware_concurrency': cores,
@@ -578,7 +581,7 @@ async def create_stealth_browser_context(playwright, anti_detection_manager: Ant
 
 
 async def execute_human_behavior(page, anti_detection_manager: AntiDetectionManager, 
-                               behavior_type: str, **kwargs):
+                                behavior_type: str, **kwargs):
     """Execute human-like behavior on a page"""
     if behavior_type == 'scroll':
         target_position = kwargs.get('position', 0)
