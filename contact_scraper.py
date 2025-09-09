@@ -369,61 +369,15 @@ if __name__ == "__main__":
 
     if args.from_db:
         db_manager = get_mongodb_manager()
-        print("\nFetching social media profiles from MongoDB for re-scraping...")
+        print("\nInitiating contact information enrichment for unified leads from all sources...")
         
-        all_db_processed_data = []
+        # Call the new enrichment function
+        enrichment_stats = db_manager.enrich_unified_leads_from_sources()
         
-        # Fetch unified leads from the database, applying limit if specified
-        # The limit is passed to get_unified_leads and also to the recursive calls
-        all_unified_leads = db_manager.get_unified_leads(limit=args.limit)
-        print(f"Found {len(all_unified_leads)} unified leads in DB for re-processing (limit: {args.limit if args.limit > 0 else 'none'}).")
-
-        for lead in all_unified_leads:
-            # Check if contact details (emails or phone numbers) already exist
-            existing_emails = lead.get("contact", {}).get("emails")
-            existing_phone_numbers = lead.get("contact", {}).get("phone_numbers")
-
-            if existing_emails and len(existing_emails) > 0 or \
-               existing_phone_numbers and len(existing_phone_numbers) > 0:
-                print(f"Skipping lead {lead.get('_id')} as contact details already exist.")
-                continue # Skip to the next lead if contact details are already present
-
-            # Extract URL and username from the unified lead
-            lead_url = lead.get("url")
-            lead_username = lead.get("profile", {}).get("username")
-            
-            # Determine if we should use URL or username for re-scraping
-            processed_data_from_rescrape = []
-            if lead_url and "linkedin.com" in lead_url:
-                # For LinkedIn URLs, use the URL directly
-                print(f"\nRe-scraping LinkedIn URL from DB: {lead_url}")
-                # Pass the limit argument, though it won't be used by scrape_from_url directly
-                processed_data_from_rescrape = asyncio.run(run_contact_scraper_and_get_data(url=lead_url, limit=args.limit))
-            elif lead_username and lead_username != lead_url: # Avoid re-scraping URL as username
-                # For other platforms, if a username exists, use it
-                print(f"\nRe-scraping social media profile from DB using name: {lead_username}")
-                processed_data_from_rescrape = asyncio.run(run_contact_scraper_and_get_data(name=lead_username, limit=args.limit))
-            elif lead_url:
-                # As a fallback, if only a URL is available, try scraping from URL
-                print(f"\nRe-scraping URL from DB: {lead_url}")
-                processed_data_from_rescrape = asyncio.run(run_contact_scraper_and_get_data(url=lead_url, limit=args.limit))
-            else:
-                print(f"Skipping lead from DB due to missing URL or username: {lead.get('_id')}")
-                continue # Skip to the next lead
-
-            if processed_data_from_rescrape:
-                all_db_processed_data.extend(processed_data_from_rescrape)
-        
-        if all_db_processed_data:
-            output_filename = f"contact_scraper_output_from_db_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            try:
-                with open(output_filename, 'w', encoding='utf-8') as f:
-                    json.dump(all_db_processed_data, f, indent=4, cls=DateTimeEncoder)
-                print(f"\n✅ All processed contact data from DB scraping saved to {output_filename}")
-            except Exception as e:
-                print(f"❌ Error saving processed data from DB scraping to JSON file: {e}")
-        else:
-            print("\nNo contact details found or updated from DB scraping.")
+        print("\nEnrichment process complete.")
+        print(f"Total unified leads processed: {enrichment_stats.get('total_unified_leads', 0)}")
+        print(f"Leads enriched with new contact info: {enrichment_stats.get('leads_enriched', 0)}")
+        print(f"Leads skipped (missing URL/username): {enrichment_stats.get('leads_skipped', 0)}")
 
     else:
         # Existing logic for -n and -u arguments, passing limit=0 as it's not relevant here
